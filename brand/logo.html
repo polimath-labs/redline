@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Redline brand</title>
+<link rel="icon" href="png/redline-carmine-32.png">
+<style>
+  :root {
+    --carmine: #d90036;
+    --ink: #0a0a0a;
+    --white: #ffffff;
+    --tint: #fbe6eb;
+    --muted: #6b6b6b;
+    --paper: #f5f5f4;
+    --mono: "JetBrains Mono", "JetBrainsMono Nerd Font", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.6 ui-sans-serif, system-ui, sans-serif; }
+  main { max-width: 1120px; margin: 0 auto; padding: 64px 32px 96px; display: grid; grid-template-columns: repeat(6, 1fr); gap: 16px; }
+  a { color: inherit; text-decoration: none; }
+  a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 2px; }
+
+  .card { position: relative; border-radius: 24px; padding: 24px; overflow: hidden; }
+  .label { font: 500 13px var(--mono); }
+  .files { display: flex; gap: 12px; font: 13px var(--mono); }
+  .foot { position: absolute; left: 24px; right: 24px; bottom: 20px; display: flex; justify-content: space-between; align-items: baseline; }
+
+  .hero { grid-column: span 4; grid-row: span 2; background: var(--ink); color: var(--white); display: flex; flex-direction: column; justify-content: space-between; min-height: 480px; padding: 40px; }
+  .hero img { width: 56px; height: 56px; }
+  .wordmark { margin: 0; font: 500 clamp(56px, 9vw, 112px)/1 var(--mono); letter-spacing: -0.05em; }
+  .wordmark span { color: var(--carmine); }
+  .hero p { margin: 16px 0 0; max-width: 40ch; color: rgb(255 255 255 / 0.7); }
+
+  .logo { grid-column: span 2; aspect-ratio: 1; display: grid; place-items: center; }
+  .logo > img { width: 34%; }
+  .carmine { background: var(--tint); }
+  .dark { background: #171717; color: var(--white); }
+  .light { background: #e7e7e5; }
+
+  .pr { grid-column: span 4; background: var(--white); display: grid; place-items: center; padding: 48px 32px 72px; }
+  .comment { width: 100%; max-width: 520px; display: grid; grid-template-columns: 40px 1fr; gap: 12px; }
+  .comment > img { width: 40px; height: 40px; border-radius: 10px; }
+  .meta { margin: 8px 0; font-size: 14px; color: var(--muted); }
+  .meta b { color: var(--ink); font-weight: 600; }
+  .bot { margin-left: 4px; padding: 1px 6px; border: 1px solid #e7e5e4; border-radius: 999px; font-size: 12px; }
+  .box { border: 1px solid #e7e5e4; border-radius: 12px; padding: 16px 20px; font-size: 14px; }
+  .box h3 { margin: 0 0 8px; font-size: 16px; }
+  .box p { margin: 0; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--tint); font-weight: 600; font-size: 13px; }
+  .box .finding { margin-top: 12px; padding-top: 12px; border-top: 1px solid #f0efee; }
+  .finding code { font: 13px var(--mono); color: var(--muted); }
+
+  .palette { grid-column: span 6; padding: 0; display: grid; grid-template-columns: 3fr 2fr 1.5fr 1.5fr 1fr; min-height: 200px; }
+  .palette div { padding: 20px 24px; display: flex; flex-direction: column; justify-content: flex-end; gap: 2px; background: var(--c); color: var(--t); }
+  .palette b { font: 500 14px var(--mono); }
+  .palette span { font-size: 13px; }
+
+  @media (max-width: 768px) {
+    main { grid-template-columns: 1fr; padding: 24px 16px 64px; }
+    .hero, .logo, .pr, .palette { grid-column: auto; grid-row: auto; }
+    .hero { min-height: 360px; padding: 28px; }
+    .palette { grid-template-columns: 1fr; }
+    .palette div { min-height: 88px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <section class="card hero">
+    <img src="redline-carmine.svg" alt="Redline logo">
+    <div>
+      <h1 class="wordmark">redline<span>_</span></h1>
+      <p>Pull request reviews that run in your own GitHub Actions, with your model and your key.</p>
+    </div>
+  </section>
+
+  <section class="card logo light">
+    <img src="redline-light.svg" alt="Light variant">
+    <div class="foot"><span class="label">light</span><span class="files"><a href="redline-light.svg" download>svg</a><a href="png/redline-light-512.png" download>png</a></span></div>
+  </section>
+
+  <section class="card logo dark">
+    <img src="redline-dark.svg" alt="Dark variant">
+    <div class="foot"><span class="label">dark</span><span class="files"><a href="redline-dark.svg" download>svg</a><a href="png/redline-dark-512.png" download>png</a></span></div>
+  </section>
+
+  <section class="card logo carmine">
+    <img src="redline-carmine.svg" alt="Carmine variant">
+    <div class="foot"><span class="label">carmine</span><span class="files"><a href="redline-carmine.svg" download>svg</a><a href="png/redline-carmine-512.png" download>png</a></span></div>
+  </section>
+
+  <section class="card pr">
+    <div class="comment">
+      <img src="png/avatar-512.png" alt="GitHub App avatar">
+      <div>
+        <p class="meta"><b>redline</b><span class="bot">bot</span> reviewed 2 minutes ago</p>
+        <div class="box">
+          <h3>Needs a decision before merging</h3>
+          <p>Merge risk <span class="pill">Medium</span></p>
+          <p class="finding"><code>server/init.ts:96</code><br>Audit insert failures leave no server log.</p>
+        </div>
+      </div>
+    </div>
+    <div class="foot"><span class="label">app avatar</span><span class="files"><a href="png/avatar-512.png" download>png</a></span></div>
+  </section>
+
+  <section class="card palette">
+    <div style="--c:#d90036;--t:#fff"><b>#D90036</b><span>Carmine</span></div>
+    <div style="--c:#0a0a0a;--t:#fff"><b>#0A0A0A</b><span>Ink</span></div>
+    <div style="--c:#ffffff;--t:#0a0a0a"><b>#FFFFFF</b><span>White</span></div>
+    <div style="--c:#fbe6eb;--t:#0a0a0a"><b>#FBE6EB</b><span>Tint</span></div>
+    <div style="--c:#6b6b6b;--t:#fff"><b>#6B6B6B</b><span>Muted</span></div>
+  </section>
+</main>
+</body>
+</html>
