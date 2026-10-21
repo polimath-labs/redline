@@ -1,14 +1,19 @@
 {
   "name": "redline",
-  "module": "index.ts",
   "version": "0.1.0",
   "type": "module",
   "private": true,
+  "packageManager": "bun@1.4.3",
+  "exports": "./src/plugin.ts",
   "scripts": {
     "typecheck": "bun check"
   },
+  "dependencies": {
+    "effect": "4.0.1"
+  },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@opencode/plugin": "2.0.32",
+    "@types/bun": "1.4.3"
   },
   "peerDependencies": {
     "typescript": "^7"

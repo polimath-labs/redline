@@ -1,0 +1,31 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "share": "disabled",
+  "snapshots": false,
+  "lsp": false,
+  "formatter": false,
+  "plugins": [
+    {
+      "package": "./",
+      "options": {
+        "wrapUp": { "minutes": 14, "requests": 30 },
+        "submit": { "minutes": 14.5, "requests": 36 }
+      }
+    }
+  ],
+  "default_agent": "review",
+  "agents": {
+    "review": {
+      "mode": "primary",
+      "steps": 40,
+      "system": "{file:./prompts/system.md}"
+    }
+  },
+  "permissions": [
+    { "action": "*", "resource": "*", "effect": "deny" },
+    { "action": "read", "resource": "*", "effect": "allow" },
+    { "action": "glob", "resource": "*", "effect": "allow" },
+    { "action": "grep", "resource": "*", "effect": "allow" },
+    { "action": "submit_review", "resource": "*", "effect": "allow" }
+  ]
+}

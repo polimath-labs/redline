@@ -1,0 +1,127 @@
+name: Redline
+description: Pull request reviews that run in your own runners, with your model and your key.
+
+inputs:
+  model:
+    description: The model to use for the review, in provider/model format.
+    required: false
+    default: opencode-go/glm-5.3-flash
+  use_github_token:
+    description: Post the review with the workflow's GITHUB_TOKEN instead of the Redline App.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Check event
+      id: check
+      shell: bash
+      env:
+        ACTION: ${{ github.event.action }}
+        DRAFT: ${{ github.event.pull_request.draft }}
+        # Known limitation: fork PRs are skipped. pull_request gives them no secrets or write token.
+        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+      run: |
+        if [[ "$ACTION" == closed || "$DRAFT" == true || "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]]; then
+          echo "::notice::Redline skips closed, draft and fork pull requests."
+          echo "run=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if [[ "$RUNNER_OS" != Linux || "$RUNNER_ARCH" != X64 ]]; then
+          echo "::error::Redline runs on Linux x64 runners only, like ubuntu-latest."
+          exit 1
+        fi
+        echo "run=true" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/checkout@v6
+      if: steps.check.outputs.run == 'true'
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+
+    - uses: oven-sh/setup-bun@v2
+      if: steps.check.outputs.run == 'true'
+      with:
+        bun-version-file: ${{ github.action_path }}/package.json
+
+    - name: Resolve versions
+      id: versions
+      if: steps.check.outputs.run == 'true'
+      shell: bash
+      run: |
+        echo "opencode=$(jq -r '.devDependencies["@opencode/plugin"]' "$GITHUB_ACTION_PATH/package.json")" >> "$GITHUB_OUTPUT"
+        echo "lock=$(sha256sum "$GITHUB_ACTION_PATH/bun.lock" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/cache@v4
+      id: cache
+      if: steps.check.outputs.run == 'true'
+      with:
+        path: |
+          ${{ github.action_path }}/node_modules
+          ${{ runner.temp }}/redline-cli
+        key: redline-${{ runner.os }}-${{ runner.arch }}-${{ steps.versions.outputs.lock }}-${{ steps.versions.outputs.opencode }}
+
+    - name: Install
+      if: steps.check.outputs.run == 'true' && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        VERSION: ${{ steps.versions.outputs.opencode }}
+      run: |
+        set -euo pipefail
+        (cd "$GITHUB_ACTION_PATH" && bun install --frozen-lockfile --production --ignore-scripts)
+        mkdir -p "$RUNNER_TEMP/redline-cli"
+        curl --fail --location --silent --show-error --retry 3 \
+          "https://registry.npmjs.org/@opencode/cli-linux-x64-baseline/-/cli-linux-x64-baseline-$VERSION.tgz" \
+          | tar -xz -C "$RUNNER_TEMP/redline-cli" --strip-components=2 package/bin/opencode
+
+    - name: Collect
+      if: steps.check.outputs.run == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: |
+        echo "$RUNNER_TEMP/redline-cli" >> "$GITHUB_PATH"
+        bun "$GITHUB_ACTION_PATH/src/collect.ts"
+        rm -rf opencode.json opencode.jsonc .opencode
+
+    - name: Review
+      if: steps.check.outputs.run == 'true'
+      shell: bash
+      env:
+        MODEL: ${{ inputs.model }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        set -euo pipefail
+        args=(--model "${MODEL:-opencode-go/glm-5.3-flash}" --agent review)
+        if [[ -f .github/redline/instructions.md ]]; then
+          args+=(--file .github/redline/instructions.md)
+        fi
+        env -u GITHUB_TOKEN -u GH_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+          OPENCODE_CONFIG="$GITHUB_ACTION_PATH/opencode.json" \
+          timeout --signal=KILL 15m opencode run --standalone "${args[@]}" \
+          "Review PR #$PR_NUMBER. Start with .github/redline/pr.json and .github/redline/diff.patch. Submit the result with submit_review." \
+          < /dev/null
+
+    - name: Get token
+      id: token
+      if: ${{ !cancelled() && steps.check.outputs.run == 'true' }}
+      shell: bash
+      env:
+        USE_GITHUB_TOKEN: ${{ inputs.use_github_token }}
+      run: |
+        if [[ "$USE_GITHUB_TOKEN" != true ]]; then
+          echo "::error::The Redline App isn't available yet. Set use_github_token: true and give the workflow pull-requests: write."
+          exit 1
+        fi
+
+    - name: Publish
+      if: ${{ !cancelled() && steps.token.outcome == 'success' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bun "$GITHUB_ACTION_PATH/src/publish.ts"
