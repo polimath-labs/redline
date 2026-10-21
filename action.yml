@@ -86,7 +86,7 @@ runs:
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
       run: |
         echo "$RUNNER_TEMP/redline-cli" >> "$GITHUB_PATH"
-        bun "$GITHUB_ACTION_PATH/src/collect.ts"
+        node "$GITHUB_ACTION_PATH/dist/collect.js"
         rm -rf opencode.json opencode.jsonc .opencode
 
     - name: Review
@@ -124,4 +124,4 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-      run: bun "$GITHUB_ACTION_PATH/src/publish.ts"
+      run: node "$GITHUB_ACTION_PATH/dist/publish.js"
