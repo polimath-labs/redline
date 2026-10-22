@@ -5649,6 +5649,7 @@ function main(run) {
 // src/publish.ts
 var label = { high: "High", medium: "Medium", low: "Low" };
 var headline = { low: "Good to merge", medium: "Needs a decision before merging", high: "Don't merge yet" };
+var logo = "https://raw.githubusercontent.com/polimath-labs/redline/main/brand/png/redline-carmine-32.png";
 var list = (items) => items.map((item) => `- ${safeText(item)}`).join(`
 `);
 var cell = (text) => safeText(text).replaceAll("|", "\\|");
@@ -5694,6 +5695,7 @@ ${list(report.gaps)}
   const mention = report.mergeRisk.level !== "low" && pull.user?.type === "User" ? `@${pull.user.login}` : "";
   const body = (...extra) => [
     marker,
+    `<img src="${logo}" width="16" height="16" alt=""> **Redline**`,
     `## ${headline[report.mergeRisk.level]}`,
     mention,
     `**${label[report.mergeRisk.level]} merge risk.** ${safeText(report.mergeRisk.reason)}`,

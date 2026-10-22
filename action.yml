@@ -1,15 +1,14 @@
 name: Redline
 description: Pull request reviews that run in your own runners, with your model and your key.
+branding:
+  icon: git-pull-request
+  color: red
 
 inputs:
   model:
     description: The model to use for the review, in provider/model format.
     required: false
     default: opencode-go/glm-5.3-flash
-  use_github_token:
-    description: Post the review with the workflow's GITHUB_TOKEN instead of the Redline App.
-    required: false
-    default: "false"
 
 runs:
   using: composite
@@ -107,20 +106,8 @@ runs:
           "Review PR #$PR_NUMBER. Start with .github/redline/pr.json and .github/redline/diff.patch. Submit the result with submit_review." \
           < /dev/null
 
-    - name: Get token
-      id: token
-      if: ${{ !cancelled() && steps.check.outputs.run == 'true' }}
-      shell: bash
-      env:
-        USE_GITHUB_TOKEN: ${{ inputs.use_github_token }}
-      run: |
-        if [[ "$USE_GITHUB_TOKEN" != true ]]; then
-          echo "::error::The Redline App isn't available yet. Set use_github_token: true and give the workflow pull-requests: write."
-          exit 1
-        fi
-
     - name: Publish
-      if: ${{ !cancelled() && steps.token.outcome == 'success' }}
+      if: ${{ !cancelled() && steps.check.outputs.run == 'true' }}
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

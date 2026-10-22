@@ -8,6 +8,7 @@ type Finding = (typeof reviewSchema.Type)["findings"][number];
 
 const label = { high: "High", medium: "Medium", low: "Low" };
 const headline = { low: "Good to merge", medium: "Needs a decision before merging", high: "Don't merge yet" };
+const logo = "https://raw.githubusercontent.com/polimath-labs/redline/main/brand/png/redline-carmine-32.png";
 
 const list = (items: readonly string[]) => items.map((item) => `- ${safeText(item)}`).join("\n");
 const cell = (text: string) => safeText(text).replaceAll("|", "\\|");
@@ -48,6 +49,7 @@ main(() => {
   const mention = report.mergeRisk.level !== "low" && pull.user?.type === "User" ? `@${pull.user.login}` : "";
   const body = (...extra: string[]) => [
     marker,
+    `<img src="${logo}" width="16" height="16" alt=""> **Redline**`,
     `## ${headline[report.mergeRisk.level]}`,
     mention,
     `**${label[report.mergeRisk.level]} merge risk.** ${safeText(report.mergeRisk.reason)}`,

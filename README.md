@@ -1,12 +1,6 @@
-<p align="center">
-  <img src="brand/redline-carmine.svg" width="72" alt="Redline">
-</p>
+# Redline
 
-<h1 align="center">redline_</h1>
-
-<p align="center">Pull request reviews that run in your own actions, with your model and your key.</p>
-
----
+Pull request reviews that run in your own actions, with your model and your key.
 
 Redline reads the diff and the code around it, then posts one review on the pull request:
 
@@ -18,9 +12,8 @@ It runs on your runner, with your key. Your code goes to the model provider you 
 
 ## Setup
 
-1. Install the [Redline GitHub App](https://github.com/apps/redline) on the repos you want reviewed.
-2. Add `OPENCODE_API_KEY` under Settings → Secrets and variables → Actions.
-3. Add `.github/workflows/redline.yml`:
+1. Add `OPENCODE_API_KEY` under Settings → Secrets and variables → Actions.
+2. Add `.github/workflows/redline.yml`:
 
 ```yaml
 name: redline
@@ -35,7 +28,7 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
+  pull-requests: write
 
 jobs:
   review:
@@ -46,7 +39,7 @@ jobs:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
 ```
 
-Open a pull request. `redline[bot]` posts its review a few minutes later.
+Open a pull request. Redline posts its review as `github-actions[bot]` a few minutes later.
 
 ## Use another model
 
@@ -74,37 +67,18 @@ Add `.github/redline/instructions.md`:
 
 Redline reads this file from the base branch, so a pull request can't change the rules it's reviewed by. It also follows your `AGENTS.md` if you have one.
 
-## Without the App
-
-Set `use_github_token: true` and give the workflow `pull-requests: write`. Reviews then come from `github-actions[bot]`, and nothing calls our servers.
-
-```yaml
-permissions:
-  contents: read
-  pull-requests: write
-
-# ...
-
-      - uses: polimath-labs/redline@v1
-        env:
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-        with:
-          use_github_token: true
-```
-
 ## Inputs
 
-| Input              | Default                     | Description                                           |
-| ------------------ | --------------------------- | ----------------------------------------------------- |
-| `model`            | `opencode-go/glm-5.3-flash` | Model in `provider/model` format.                     |
-| `use_github_token` | `false`                     | Post with the workflow's `GITHUB_TOKEN`, not the App. |
+| Input   | Default                     | Description                       |
+| ------- | --------------------------- | --------------------------------- |
+| `model` | `opencode-go/glm-5.3-flash` | Model in `provider/model` format. |
 
 ## How it runs
 
 - The review is an [opencode](https://opencode.ai) agent that can read and search files. It can't run commands, edit files or fetch URLs.
 - A new push cancels the running review and starts a fresh one. Closing the pull request cancels it.
 - Drafts are skipped until they're marked ready. Pull requests from forks are skipped, because GitHub doesn't pass secrets to them.
-- With the App, the action trades the run's GitHub OIDC token for a token that can only comment on pull requests in that one repo. That exchange is the only part we host. It never sees your code or your key.
+- Reviews are posted with the workflow's own `GITHUB_TOKEN`. Nothing calls our servers.
 
 ## License
 
