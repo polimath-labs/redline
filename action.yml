@@ -1,15 +1,14 @@
 name: Redline
 description: Pull request reviews that run in your own runners, with your model and your key.
+branding:
+  icon: git-pull-request
+  color: red
 
 inputs:
   model:
     description: The model to use for the review, in provider/model format.
     required: false
     default: opencode-go/glm-5.3-flash
-  use_github_token:
-    description: Post the review with the workflow's GITHUB_TOKEN instead of the Redline App.
-    required: false
-    default: "false"
 
 runs:
   using: composite
@@ -20,7 +19,7 @@ runs:
       env:
         ACTION: ${{ github.event.action }}
         DRAFT: ${{ github.event.pull_request.draft }}
-        # Known limitation: fork PRs are skipped. pull_request gives them no secrets or write token.
+        # Fork PRs are skipped: their files could prompt-inject the model into leaking the user's API key.
         HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
       run: |
         if [[ "$ACTION" == closed || "$DRAFT" == true || "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]]; then
@@ -88,6 +87,7 @@ runs:
         echo "$RUNNER_TEMP/redline-cli" >> "$GITHUB_PATH"
         node "$GITHUB_ACTION_PATH/dist/collect.js"
         rm -rf opencode.json opencode.jsonc .opencode
+        find . -path ./.git -prune -o \( -name AGENTS.md -o -name CLAUDE.md \) -type f -exec rm -f {} +
 
     - name: Review
       if: steps.check.outputs.run == 'true'
@@ -107,20 +107,8 @@ runs:
           "Review PR #$PR_NUMBER. Start with .github/redline/pr.json and .github/redline/diff.patch. Submit the result with submit_review." \
           < /dev/null
 
-    - name: Get token
-      id: token
-      if: ${{ !cancelled() && steps.check.outputs.run == 'true' }}
-      shell: bash
-      env:
-        USE_GITHUB_TOKEN: ${{ inputs.use_github_token }}
-      run: |
-        if [[ "$USE_GITHUB_TOKEN" != true ]]; then
-          echo "::error::The Redline App isn't available yet. Set use_github_token: true and give the workflow pull-requests: write."
-          exit 1
-        fi
-
     - name: Publish
-      if: ${{ !cancelled() && steps.token.outcome == 'success' }}
+      if: ${{ !cancelled() && steps.check.outputs.run == 'true' }}
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

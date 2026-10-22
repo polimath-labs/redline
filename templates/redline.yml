@@ -1,7 +1,7 @@
 name: redline
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, closed]
 
 concurrency:
@@ -10,7 +10,7 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
+  pull-requests: write
 
 jobs:
   review:
