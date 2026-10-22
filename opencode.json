@@ -8,8 +8,8 @@
     {
       "package": "./",
       "options": {
-        "wrapUp": { "minutes": 14, "requests": 30 },
-        "submit": { "minutes": 14.5, "requests": 36 }
+        "wrapUpMinutes": 14,
+        "submitMinutes": 14.5
       }
     }
   ],
@@ -17,7 +17,6 @@
   "agents": {
     "review": {
       "mode": "primary",
-      "steps": 40,
       "system": "{file:./prompts/system.md}"
     }
   },

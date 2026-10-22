@@ -56,6 +56,8 @@ main(() => {
     pr: Number(process.env.PR_NUMBER),
     head: process.env.HEAD_SHA,
     base: process.env.BASE_SHA,
+    maxFindings: Number(process.env.MAX_FINDINGS),
+    failOn: process.env.FAIL_ON,
   });
   const endpoint = `repos/${run.repository}/pulls/${run.pr}`;
   const pull = api([endpoint], pullSchema);

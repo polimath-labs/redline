@@ -1,4 +1,4 @@
-name: Redline
+name: Redline Review
 description: Pull request reviews that run in your own runners, with your model and your key.
 branding:
   icon: git-pull-request
@@ -8,7 +8,15 @@ inputs:
   model:
     description: The model to use for the review, in provider/model format.
     required: false
-    default: opencode-go/glm-5.3-flash
+    default: opencode-go/glm-5.3
+  max_findings:
+    description: The most findings one review can post.
+    required: false
+    default: "10"
+  fail_on:
+    description: Fail the run at this merge risk or above. One of high, medium or never.
+    required: false
+    default: high
 
 runs:
   using: composite
@@ -83,6 +91,8 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        MAX_FINDINGS: ${{ inputs.max_findings || '10' }}
+        FAIL_ON: ${{ inputs.fail_on || 'high' }}
       run: |
         echo "$RUNNER_TEMP/redline-cli" >> "$GITHUB_PATH"
         node "$GITHUB_ACTION_PATH/dist/collect.js"
@@ -97,7 +107,7 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         set -euo pipefail
-        args=(--model "${MODEL:-opencode-go/glm-5.3-flash}" --agent review)
+        args=(--model "${MODEL:-opencode-go/glm-5.3}" --agent review)
         if [[ -f .github/redline/instructions.md ]]; then
           args+=(--file .github/redline/instructions.md)
         fi

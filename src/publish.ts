@@ -8,7 +8,9 @@ type Finding = (typeof reviewSchema.Type)["findings"][number];
 
 const label = { high: "High", medium: "Medium", low: "Low" };
 const headline = { low: "Good to merge", medium: "Needs a decision before merging", high: "Don't merge yet" };
+const rank = { low: 0, medium: 1, high: 2, never: 3 };
 const logo = "https://raw.githubusercontent.com/polimath-labs/redline/main/brand/png/redline-carmine-32.png";
+const readme = "https://github.com/polimath-labs/redline#readme";
 
 const list = (items: readonly string[]) => items.map((item) => `- ${safeText(item)}`).join("\n");
 const cell = (text: string) => safeText(text).replaceAll("|", "\\|");
@@ -49,7 +51,6 @@ main(() => {
   const mention = report.mergeRisk.level !== "low" && pull.user?.type === "User" ? `@${pull.user.login}` : "";
   const body = (...extra: string[]) => [
     marker,
-    `<img src="${logo}" width="16" height="16" alt=""> **Redline**`,
     `## ${headline[report.mergeRisk.level]}`,
     mention,
     `**${label[report.mergeRisk.level]} merge risk.** ${safeText(report.mergeRisk.reason)}`,
@@ -59,7 +60,7 @@ main(() => {
     incomplete,
     gaps,
     ...extra,
-    `<sub>Redline reviewed ${context.head.slice(0, 7)}. Advisory, it doesn't block merging.</sub>`,
+    `<sub><img src="${logo}" width="12" height="12" alt=""> Review of [\`${context.head.slice(0, 7)}\`](https://github.com/${context.repository}/commit/${context.head}) via [Redline](${readme})</sub>`,
   ].filter(Boolean).join("\n\n");
   const post = (review: { body: string; comments: typeof comments }) =>
     command("gh", ["api", `${endpoint}/reviews`, "--method", "POST", "--input", "-"], JSON.stringify({ commit_id: context.head, event: "COMMENT", ...review }));
@@ -71,5 +72,9 @@ main(() => {
     log(`Inline comments rejected, posting findings in the summary: ${errorMessage(error)}`);
     post({ body: body(...report.findings.map((finding) => `### ${label[finding.severity]} · ${safeText(finding.title)}\n\n${location(finding)}\n\n${explain(finding)}`)), comments: [] });
     log(`Posted ${report.mergeRisk.level}-risk review on PR #${context.pr} with findings in the summary.`);
+  }
+  if (rank[report.mergeRisk.level] >= rank[context.failOn]) {
+    console.log(`::error::Redline found ${report.mergeRisk.level} merge risk. See the review on PR #${context.pr}.`);
+    process.exitCode = 1;
   }
 });

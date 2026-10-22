@@ -21,7 +21,7 @@ export const reviewSchema = Schema.Struct({
     title: text(100),
     problem: text(500),
     fix: text(350),
-  })).check(Schema.isMaxLength(5)),
+  })),
 });
 
 export const runSchema = Schema.Struct({
@@ -29,6 +29,8 @@ export const runSchema = Schema.Struct({
   pr: positiveInt,
   head: sha,
   base: sha,
+  maxFindings: positiveInt,
+  failOn: Schema.Literals(["high", "medium", "never"]),
 });
 
 export const contextSchema = Schema.Struct({
@@ -49,6 +51,7 @@ export function readJson<A>(path: string, schema: Schema.ConstraintDecoder<A>) {
 
 export function validateReview(input: unknown, context: typeof contextSchema.Type) {
   const report = Schema.decodeUnknownSync(reviewSchema, { onExcessProperty: "error" })(input);
+  if (report.findings.length > context.maxFindings) throw new Error(`At most ${context.maxFindings} findings. Keep the strongest.`);
   const has = (severity: "high" | "medium") => report.findings.some((finding) => finding.severity === severity);
   if (report.status === "incomplete" && report.gaps.length === 0) throw new Error("An incomplete review must list the changed code it didn't read in gaps.");
   if (has("high") && report.mergeRisk.level !== "high") throw new Error("A high-severity finding requires high merge risk.");

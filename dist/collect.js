@@ -5556,13 +5556,15 @@ var reviewSchema = Struct({
     title: text(100),
     problem: text(500),
     fix: text(350)
-  })).check(isMaxLength(5))
+  }))
 });
 var runSchema = Struct({
   repository: String4.check(isPattern2(/^[\w.-]+\/[\w.-]+$/)),
   pr: positiveInt,
   head: sha,
-  base: sha
+  base: sha,
+  maxFindings: positiveInt,
+  failOn: Literals(["high", "medium", "never"])
 });
 var contextSchema = Struct({
   ...runSchema.fields,
@@ -5578,6 +5580,8 @@ function readJson(path, schema) {
 }
 function validateReview(input, context) {
   const report = decodeUnknownSync(reviewSchema, { onExcessProperty: "error" })(input);
+  if (report.findings.length > context.maxFindings)
+    throw new Error(`At most ${context.maxFindings} findings. Keep the strongest.`);
   const has = (severity) => report.findings.some((finding) => finding.severity === severity);
   if (report.status === "incomplete" && report.gaps.length === 0)
     throw new Error("An incomplete review must list the changed code it didn't read in gaps.");
@@ -5704,7 +5708,9 @@ main(() => {
     repository: process.env.GITHUB_REPOSITORY,
     pr: Number(process.env.PR_NUMBER),
     head: process.env.HEAD_SHA,
-    base: process.env.BASE_SHA
+    base: process.env.BASE_SHA,
+    maxFindings: Number(process.env.MAX_FINDINGS),
+    failOn: process.env.FAIL_ON
   });
   const endpoint = `repos/${run.repository}/pulls/${run.pr}`;
   const pull = api([endpoint], pullSchema);

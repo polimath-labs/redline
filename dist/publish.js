@@ -5555,13 +5555,15 @@ var reviewSchema = Struct({
     title: text(100),
     problem: text(500),
     fix: text(350)
-  })).check(isMaxLength(5))
+  }))
 });
 var runSchema = Struct({
   repository: String4.check(isPattern2(/^[\w.-]+\/[\w.-]+$/)),
   pr: positiveInt,
   head: sha,
-  base: sha
+  base: sha,
+  maxFindings: positiveInt,
+  failOn: Literals(["high", "medium", "never"])
 });
 var contextSchema = Struct({
   ...runSchema.fields,
@@ -5577,6 +5579,8 @@ function readJson(path, schema) {
 }
 function validateReview(input, context) {
   const report = decodeUnknownSync(reviewSchema, { onExcessProperty: "error" })(input);
+  if (report.findings.length > context.maxFindings)
+    throw new Error(`At most ${context.maxFindings} findings. Keep the strongest.`);
   const has = (severity) => report.findings.some((finding) => finding.severity === severity);
   if (report.status === "incomplete" && report.gaps.length === 0)
     throw new Error("An incomplete review must list the changed code it didn't read in gaps.");
@@ -5649,7 +5653,9 @@ function main(run) {
 // src/publish.ts
 var label = { high: "High", medium: "Medium", low: "Low" };
 var headline = { low: "Good to merge", medium: "Needs a decision before merging", high: "Don't merge yet" };
+var rank = { low: 0, medium: 1, high: 2, never: 3 };
 var logo = "https://raw.githubusercontent.com/polimath-labs/redline/main/brand/png/redline-carmine-32.png";
+var readme = "https://github.com/polimath-labs/redline#readme";
 var list = (items) => items.map((item) => `- ${safeText(item)}`).join(`
 `);
 var cell = (text) => safeText(text).replaceAll("|", "\\|");
@@ -5695,7 +5701,6 @@ ${list(report.gaps)}
   const mention = report.mergeRisk.level !== "low" && pull.user?.type === "User" ? `@${pull.user.login}` : "";
   const body = (...extra) => [
     marker,
-    `<img src="${logo}" width="16" height="16" alt=""> **Redline**`,
     `## ${headline[report.mergeRisk.level]}`,
     mention,
     `**${label[report.mergeRisk.level]} merge risk.** ${safeText(report.mergeRisk.reason)}`,
@@ -5712,7 +5717,7 @@ ${list(report.checked)}
     incomplete,
     gaps,
     ...extra,
-    `<sub>Redline reviewed ${context.head.slice(0, 7)}. Advisory, it doesn't block merging.</sub>`
+    `<sub><img src="${logo}" width="12" height="12" alt=""> Review of [\`${context.head.slice(0, 7)}\`](https://github.com/${context.repository}/commit/${context.head}) via [Redline](${readme})</sub>`
   ].filter(Boolean).join(`
 
 `);
@@ -5728,5 +5733,9 @@ ${location(finding)}
 
 ${explain(finding)}`)), comments: [] });
     log(`Posted ${report.mergeRisk.level}-risk review on PR #${context.pr} with findings in the summary.`);
+  }
+  if (rank[report.mergeRisk.level] >= rank[context.failOn]) {
+    console.log(`::error::Redline found ${report.mergeRisk.level} merge risk. See the review on PR #${context.pr}.`);
+    process.exitCode = 1;
   }
 });

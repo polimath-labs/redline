@@ -4,8 +4,7 @@ import { Plugin } from "@opencode/plugin/effect";
 import { Effect, Schema } from "effect";
 import { contextSchema, errorMessage, readJson, reviewSchema, validateReview } from "./schema";
 
-const stageSchema = Schema.Struct({ minutes: Schema.Number, requests: Schema.Number });
-const limitsSchema = Schema.Struct({ wrapUp: stageSchema, submit: stageSchema });
+const limitsSchema = Schema.Struct({ wrapUpMinutes: Schema.Number, submitMinutes: Schema.Number });
 const wrapUp = "You are close to the time limit. Finish checking the findings you are working on, then call submit_review. If you did not cover everything, set status to incomplete and list the gaps.";
 const submitNow = "Time is up. Call submit_review now with the findings you have already confirmed. Set status to incomplete and list what you did not cover in gaps.";
 
@@ -16,18 +15,16 @@ export default Plugin.define({
     const context = readJson(join(directory, "context.json"), contextSchema);
     const limits = Schema.decodeUnknownSync(limitsSchema)(ctx.options);
     const start = Date.now();
-    let requests = 0;
-    const reached = (stage: typeof stageSchema.Type) => Date.now() - start >= stage.minutes * 60_000 || requests >= stage.requests;
+    const reached = (minutes: number) => Date.now() - start >= minutes * 60_000;
 
     yield* ctx.session.hook("title", (event) => Effect.sync(() => { event.result = "Redline review"; }));
     yield* ctx.session.hook("context", (event) => Effect.sync(() => {
-      requests++;
-      if (reached(limits.submit)) {
+      if (reached(limits.submitMinutes)) {
         event.system.push({ type: "text", text: submitNow });
         for (const name of Object.keys(event.tools)) {
           if (name !== "submit_review") delete event.tools[name];
         }
-      } else if (reached(limits.wrapUp)) {
+      } else if (reached(limits.wrapUpMinutes)) {
         event.system.push({ type: "text", text: wrapUp });
       }
     }));
