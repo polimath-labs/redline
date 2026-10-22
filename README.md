@@ -19,7 +19,7 @@ It runs on your runner, with your key. Your code goes to the model provider you 
 name: redline
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, closed]
 
 concurrency:
@@ -65,7 +65,7 @@ Add `.github/redline/instructions.md`:
 - We don't log request bodies.
 ```
 
-Redline reads this file from the base branch, so a pull request can't change the rules it's reviewed by. It also follows your `AGENTS.md` if you have one.
+Redline reads this file from the base branch, so a pull request can't change the rules it's reviewed by.
 
 ## Inputs
 
@@ -77,7 +77,7 @@ Redline reads this file from the base branch, so a pull request can't change the
 
 - The review is an [opencode](https://opencode.ai) agent that can read and search files. It can't run commands, edit files or fetch URLs.
 - A new push cancels the running review and starts a fresh one. Closing the pull request cancels it.
-- Drafts are skipped until they're marked ready. Pull requests from forks are skipped, because GitHub doesn't pass secrets to them.
+- Drafts are skipped until they're marked ready. Pull requests from forks are skipped, so strangers can't hide instructions in a PR that trick the model into leaking your key.
 - Reviews are posted with the workflow's own `GITHUB_TOKEN`. Nothing calls our servers.
 
 ## License

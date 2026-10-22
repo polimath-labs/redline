@@ -19,7 +19,7 @@ runs:
       env:
         ACTION: ${{ github.event.action }}
         DRAFT: ${{ github.event.pull_request.draft }}
-        # Known limitation: fork PRs are skipped. pull_request gives them no secrets or write token.
+        # Fork PRs are skipped: their files could prompt-inject the model into leaking the user's API key.
         HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
       run: |
         if [[ "$ACTION" == closed || "$DRAFT" == true || "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]]; then
@@ -87,6 +87,7 @@ runs:
         echo "$RUNNER_TEMP/redline-cli" >> "$GITHUB_PATH"
         node "$GITHUB_ACTION_PATH/dist/collect.js"
         rm -rf opencode.json opencode.jsonc .opencode
+        find . -path ./.git -prune -o \( -name AGENTS.md -o -name CLAUDE.md \) -type f -exec rm -f {} +
 
     - name: Review
       if: steps.check.outputs.run == 'true'
