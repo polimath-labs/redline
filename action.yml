@@ -8,7 +8,7 @@ inputs:
   model:
     description: The model to use for the review, in provider/model format.
     required: false
-    default: opencode-go/glm-5.3
+    default: opencode-go/glm-5.3-flash
   max_findings:
     description: The most findings one review can post.
     required: false
@@ -107,7 +107,7 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         set -euo pipefail
-        args=(--model "${MODEL:-opencode-go/glm-5.3}" --agent review)
+        args=(--model "${MODEL:-opencode-go/glm-5.3-flash}" --agent review)
         if [[ -f .github/redline/instructions.md ]]; then
           args+=(--file .github/redline/instructions.md)
         fi

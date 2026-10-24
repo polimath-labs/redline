@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![By Polimath Labs](https://img.shields.io/badge/by-Polimath%20Labs-D90036.svg)](https://polimath.dev/)
 
-Redline runs an [opencode](https://opencode.ai) agent in *your* GitHub Actions to review your pull requests. All work is done in your CI environment, and we don't collect any data. Your code goes to the model provider you pick and nowhere else.
+Redline runs an [opencode](https://opencode.ai) agent in **your** CI runners to review your pull requests. We don't collect any data, however your code goes to the model provider you pick and nowhere else.
 
 Each review posts one comment on the pull request with:
 
@@ -63,7 +63,7 @@ Redline reads this file from the base branch, so a pull request can't rewrite th
 
 ### Models and keys
 
-The default model is `opencode-go/glm-5.3`. To use another, set `model` and pass that provider's key:
+The default model is `opencode-go/glm-5.3-flash`. To use another, set `model` and pass that provider's key:
 
 ```yaml
       - uses: polimath-labs/redline@v1
@@ -120,11 +120,11 @@ A high risk fails the run after the review posts, so the pull request shows a fa
 
 ## Inputs
 
-| Input          | Default               | Description                                                            |
-| -------------- | --------------------- | ---------------------------------------------------------------------- |
-| `model`        | `opencode-go/glm-5.3` | Model in `provider/model` format.                                      |
-| `max_findings` | `10`                  | The most findings one review can post.                                 |
-| `fail_on`      | `high`                | Fail the run at this merge risk or above: `high`, `medium` or `never`. |
+| Input          | Default                     | Description                                                            |
+| -------------- | --------------------------- | ---------------------------------------------------------------------- |
+| `model`        | `opencode-go/glm-5.3-flash` | Model in `provider/model` format.                                      |
+| `max_findings` | `10`                        | The most findings one review can post.                                 |
+| `fail_on`      | `high`                      | Fail the run at this merge risk or above: `high`, `medium` or `never`. |
 
 ## When it runs
 
@@ -135,12 +135,8 @@ A high risk fails the run after the review posts, so the pull request shows a fa
 - Pull requests over 200 files or 300,000 characters of diff are too large to review. Split them up.
 - Lockfiles are left out of the diff.
 
-## Security
+## Callouts 
 
 - The agent can read and search files. It can't run commands, edit files or fetch URLs.
 - Reviews post with the workflow's own `GITHUB_TOKEN`, and the agent never sees it. Nothing calls our servers.
 - Pull requests from forks are skipped. A stranger's pull request could hide instructions that trick the model into leaking your key.
-
-## License
-
-[MIT](LICENSE)

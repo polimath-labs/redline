@@ -6,7 +6,7 @@
   "formatter": false,
   "plugins": [
     {
-      "package": "./",
+      "package": "./src",
       "options": {
         "wrapUpMinutes": 14,
         "submitMinutes": 14.5

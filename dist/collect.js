@@ -5729,6 +5729,7 @@ main(() => {
     throw new Error("PR too large to review: split PRs over 200 files or 300,000 diff characters.");
   }
   const functions = diffWith("--function-context");
+  rmSync(directory, { recursive: true, force: true });
   mkdirSync(directory, { recursive: true });
   writeFileSync(join2(directory, "diff.patch"), diff);
   writeFileSync(join2(directory, "functions.patch"), functions);
