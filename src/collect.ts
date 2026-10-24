@@ -80,6 +80,7 @@ main(() => {
   }
   const functions = diffWith("--function-context");
 
+  rmSync(directory, { recursive: true, force: true });
   mkdirSync(directory, { recursive: true });
   writeFileSync(join(directory, "diff.patch"), diff);
   writeFileSync(join(directory, "functions.patch"), functions);
