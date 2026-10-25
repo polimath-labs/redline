@@ -8,8 +8,8 @@
     {
       "package": "./src",
       "options": {
-        "wrapUpMinutes": 14,
-        "submitMinutes": 14.5
+        "wrapUpMinutes": 12,
+        "submitMinutes": 13
       }
     }
   ],

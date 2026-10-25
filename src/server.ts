@@ -5,8 +5,8 @@ import { Effect, Schema } from "effect";
 import { contextSchema, errorMessage, readJson, reviewSchema, validateReview } from "./schema";
 
 const limitsSchema = Schema.Struct({ wrapUpMinutes: Schema.Number, submitMinutes: Schema.Number });
-const wrapUp = "You are close to the time limit. Finish checking the findings you are working on, then call submit_review. If you did not cover everything, set status to incomplete and list the gaps.";
-const submitNow = "Time is up. Call submit_review now with the findings you have already confirmed. Set status to incomplete and list what you did not cover in gaps.";
+const wrapUp = "Stop starting new investigations and resolve candidates already under review. Update your working summary with confirmed findings, rejected candidates and their reasons, and unfinished checks.";
+const submitNow = "You are almost out of time. Stop investigating and consolidate your review using the evidence you already gathered. Review your findings, drop unsupported claims, merge duplicates, and rank the remaining findings by impact. Call submit_review before the time limit. If coverage is incomplete, set status to incomplete and list unfinished checks in gaps.";
 
 export default Plugin.define({
   id: "redline",
