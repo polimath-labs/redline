@@ -19,3 +19,5 @@ jobs:
       - uses: polimath-labs/redline@v1
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        with:
+          model: ${{ vars.REDLINE_MODEL }}

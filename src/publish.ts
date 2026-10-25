@@ -9,7 +9,6 @@ type Finding = (typeof reviewSchema.Type)["findings"][number];
 const label = { high: "High", medium: "Medium", low: "Low" };
 const headline = { low: "Good to merge", medium: "Needs a decision before merging", high: "Don't merge yet" };
 const rank = { low: 0, medium: 1, high: 2, never: 3 };
-const logo = "https://raw.githubusercontent.com/polimath-labs/redline/main/brand/png/redline-carmine-32.png";
 const readme = "https://github.com/polimath-labs/redline#readme";
 
 const list = (items: readonly string[]) => items.map((item) => `- ${safeText(item)}`).join("\n");
@@ -60,7 +59,7 @@ main(() => {
     incomplete,
     gaps,
     ...extra,
-    `<sub><img src="${logo}" width="12" height="12" alt=""> Review of [\`${context.head.slice(0, 7)}\`](https://github.com/${context.repository}/commit/${context.head}) via [Redline](${readme})</sub>`,
+    `<sub>Review of [\`${context.head.slice(0, 7)}\`](https://github.com/${context.repository}/commit/${context.head}) via [Redline](${readme})</sub>`,
   ].filter(Boolean).join("\n\n");
   const post = (review: { body: string; comments: typeof comments }) =>
     command("gh", ["api", `${endpoint}/reviews`, "--method", "POST", "--input", "-"], JSON.stringify({ commit_id: context.head, event: "COMMENT", ...review }));

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { Schema } from "effect";
 import { errorMessage } from "./schema";
 
-  export const directory = join(process.cwd(), ".github", "redline");
+export const directory = join(process.cwd(), ".github", "redline");
 
 const userSchema = Schema.NullOr(Schema.Struct({ login: Schema.String, type: Schema.String }));
 

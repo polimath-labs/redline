@@ -14,7 +14,7 @@ A clean pull request gets "Good to merge" and no findings.
 
 ## Setup
 
-1. Add your provider's key as a repository secret under Settings → Secrets and variables → Actions. The default model uses `OPENCODE_API_KEY`. Other providers are in [Models and keys](#models-and-keys).
+1. Add your provider's key as a repository secret under Settings → Secrets and variables → Actions. The default model, `opencode-go/glm-5.3-flash`, uses `OPENCODE_API_KEY`. Other providers are in [Models and keys](#models-and-keys).
 2. Add the workflow below in `.github/workflows/redline.yml`:
 
 ```yaml
@@ -88,14 +88,7 @@ Keys work the way they do when you run opencode in your shell. Each provider rea
 
 For anything else, take the model name and variable from opencode's [providers list](https://opencode.ai/docs/providers/).
 
-To change models without touching the workflow, you can set the model from a repository variable:
-
-```yaml
-        with:
-          model: ${{ vars.REDLINE_MODEL }}
-```
-
-Set `REDLINE_MODEL` under Settings → Secrets and variables → Actions → Variables. When it's empty, Redline uses the default.
+To change models without touching the workflow, use [`templates/redline.yml`](templates/redline.yml). It reads the model from the `REDLINE_MODEL` repository variable, which you set under Settings → Secrets and variables → Actions → Variables. When it's empty, Redline uses the default.
 
 We recommend using Redline with its own key and with a spending limit. Each review is one agent session, capped at 15 minutes.
 
