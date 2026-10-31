@@ -5530,16 +5530,24 @@ var arbitraryMinimumZonedDateTimeTimestamp = arbitraryMinimumDateTimestamp + 14 
 var arbitraryMaximumZonedDateTimeTimestamp = arbitraryMaximumDateTimestamp - 14 * 60 * 60 * 1000;
 var arbitraryMinimumTimeZoneOffset = -12 * 60 * 60 * 1000;
 var arbitraryMaximumTimeZoneOffset = 14 * 60 * 60 * 1000;
-// src/github.ts
-import { execFileSync } from "node:child_process";
-import { appendFileSync } from "node:fs";
-import { join } from "node:path";
+// src/checkpoint.ts
+import { deflateRawSync, inflateRawSync } from "node:zlib";
 
 // src/schema.ts
 import { readFileSync } from "node:fs";
 var text = (max) => String4.check(isMinLength(1), isMaxLength(max));
 var positiveInt = Int.check(isGreaterThan2(0));
 var sha = String4.check(isPattern2(/^[a-f0-9]{40}$/));
+var severity = Literals(["high", "medium", "low"]);
+var findingId = String4.check(isPattern2(/^F[1-9]\d{0,4}$/));
+var findingFields = {
+  severity,
+  path: text(500),
+  line: positiveInt,
+  title: text(100),
+  problem: text(500),
+  fix: text(350)
+};
 var reviewSchema = Struct({
   status: Literals(["complete", "incomplete"]),
   changes: ArraySchema(text(160)).check(isMinLength(1), isMaxLength(4)),
@@ -5549,14 +5557,29 @@ var reviewSchema = Struct({
     level: Literals(["low", "medium", "high"]),
     reason: text(300)
   }),
-  findings: ArraySchema(Struct({
-    severity: Literals(["high", "medium", "low"]),
-    path: text(500),
-    line: positiveInt,
-    title: text(100),
-    problem: text(500),
-    fix: text(350)
+  findings: ArraySchema(Struct(findingFields)),
+  previous: ArraySchema(Struct({
+    id: findingId,
+    status: Literals(["open", "fixed"])
   }))
+});
+var storedFindingSchema = Struct({ id: findingId, ...findingFields, commit: sha });
+var stateSchema = Struct({
+  version: Literal2(1),
+  head: sha,
+  baseRef: String4,
+  mergeBase: sha,
+  nextId: positiveInt,
+  findings: ArraySchema(storedFindingSchema)
+});
+var triggerSchema = Struct({
+  pr: positiveInt,
+  head: sha,
+  base: sha,
+  baseRef: String4,
+  manual: Boolean3,
+  full: Boolean3,
+  instructions: String4
 });
 var runSchema = Struct({
   repository: String4.check(isPattern2(/^[\w.-]+\/[\w.-]+$/)),
@@ -5568,6 +5591,13 @@ var runSchema = Struct({
 });
 var contextSchema = Struct({
   ...runSchema.fields,
+  mode: Literals(["full", "incremental", "revisit"]),
+  reason: String4,
+  since: NullOr(sha),
+  baseRef: String4,
+  mergeBase: sha,
+  nextId: positiveInt,
+  previous: ArraySchema(storedFindingSchema),
   addedLines: Record(String4, ArraySchema(positiveInt))
 });
 var marker = "<!-- redline -->";
@@ -5578,23 +5608,41 @@ function readJson(path, schema) {
   const data = JSON.parse(readFileSync(path, "utf8"));
   return decodeUnknownSync(schema)(data);
 }
+var sameFinding = (a, b) => a.path === b.path && a.title.trim().toLowerCase() === b.title.trim().toLowerCase();
 function validateReview(input, context) {
   const report = decodeUnknownSync(reviewSchema, { onExcessProperty: "error" })(input);
   if (report.findings.length > context.maxFindings)
-    throw new Error(`At most ${context.maxFindings} findings. Keep the strongest.`);
-  const has = (severity) => report.findings.some((finding) => finding.severity === severity);
+    throw new Error(`At most ${context.maxFindings} new findings. Keep the strongest.`);
+  const known = new Map(context.previous.map((finding) => [finding.id, finding]));
+  const statuses = new Map;
+  for (const entry of report.previous) {
+    if (!known.has(entry.id))
+      throw new Error(`Unknown previous finding: ${entry.id}. Use only ids from previousFindings in pr.json.`);
+    if (statuses.has(entry.id))
+      throw new Error(`Previous finding listed twice: ${entry.id}`);
+    statuses.set(entry.id, entry.status);
+  }
+  const missing = context.previous.filter((finding) => !statuses.has(finding.id)).map((finding) => finding.id);
+  if (missing.length > 0)
+    throw new Error(`Give a status for every previous finding. Missing: ${missing.join(", ")}`);
+  const stillOpen = context.previous.filter((finding) => statuses.get(finding.id) === "open");
+  const open = [...report.findings, ...stillOpen];
+  const has = (level) => open.some((finding) => finding.severity === level);
   if (report.status === "incomplete" && report.gaps.length === 0)
     throw new Error("An incomplete review must list the changed code it didn't read in gaps.");
   if (has("high") && report.mergeRisk.level !== "high")
-    throw new Error("A high-severity finding requires high merge risk.");
+    throw new Error("A high-severity finding, new or still open, requires high merge risk.");
   if (report.mergeRisk.level === "low" && (report.status === "incomplete" || has("medium"))) {
-    throw new Error("Incomplete coverage or medium-severity findings require at least medium merge risk.");
+    throw new Error("Incomplete coverage or medium-severity findings, new or still open, require at least medium merge risk.");
   }
   const seen = new Set;
   for (const finding of report.findings) {
     if (!context.addedLines[finding.path]?.includes(finding.line)) {
       throw new Error(`Finding must target an added line: ${finding.path}:${finding.line}`);
     }
+    const earlier = context.previous.find((item) => sameFinding(item, finding));
+    if (earlier)
+      throw new Error(`${earlier.id} already reports "${earlier.title}". Give its status in previous instead of reporting it again.`);
     const key = `${finding.path}:${finding.line}:${finding.title.toLowerCase()}`;
     if (seen.has(key))
       throw new Error(`Duplicate finding: ${key}`);
@@ -5604,61 +5652,62 @@ function validateReview(input, context) {
   return { ...report, findings: report.findings.toSorted((a, b) => priority[a.severity] - priority[b.severity]) };
 }
 
-// src/github.ts
-var directory = join(process.cwd(), ".github", "redline");
-var userSchema = NullOr(Struct({ login: String4, type: String4 }));
-var pullSchema = Struct({
-  title: String4,
-  user: userSchema,
-  body: NullOr(String4),
-  state: String4,
-  draft: Boolean3,
-  head: Struct({ sha: String4 })
-});
-var commentSchema = Struct({
-  body: NullOr(String4),
-  user: userSchema,
-  created_at: optional2(String4),
-  submitted_at: optional2(NullOr(String4)),
-  path: optional2(String4),
-  line: optional2(NullOr(Number5))
-});
-function safeText(text) {
-  return text.replaceAll(/<!--[\s\S]*?-->/g, "").replaceAll(/@(?=[\w-])/g, "@​");
+// src/checkpoint.ts
+var botLogin = "github-actions[bot]";
+var statePattern = /<!-- redline:state ([A-Za-z0-9_-]+) -->/;
+function encodeState(state) {
+  return `<!-- redline:state ${deflateRawSync(JSON.stringify(state)).toString("base64url")} -->`;
 }
-function log(message) {
-  console.log(message);
-  if (process.env.GITHUB_STEP_SUMMARY)
-    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${message}
-`);
-}
-function command(program, args, input) {
-  return execFileSync(program, args, { input, encoding: "utf8", stdio: "pipe", maxBuffer: 50 * 1024 * 1024, timeout: 120000 });
-}
-function api(args, schema) {
-  const data = JSON.parse(command("gh", ["api", ...args]));
-  return decodeUnknownSync(schema)(data);
-}
-function pages(path, schema) {
-  return api(["--paginate", "--slurp", path], ArraySchema(ArraySchema(schema))).flat();
-}
-function main(run) {
+function decodeState(body) {
+  const match = statePattern.exec(body);
+  if (!match?.[1])
+    return;
   try {
-    run();
-  } catch (error) {
-    log(`Redline failed: ${safeText(errorMessage(error))}`);
-    process.exitCode = 1;
+    return decodeUnknownSync(stateSchema)(JSON.parse(inflateRawSync(Buffer.from(match[1], "base64url"), { maxOutputLength: 1e6 }).toString("utf8")));
+  } catch {
+    return;
   }
 }
+function stripState(body) {
+  return body.replace(statePattern, "").trim();
+}
+function latestState(reviews) {
+  for (const review of reviews.toReversed()) {
+    if (review.user?.login !== botLogin || review.user.type !== "Bot" || !review.body)
+      continue;
+    const state = decodeState(review.body);
+    if (state && state.head === review.commit_id)
+      return state;
+  }
+  return;
+}
+function plan(input, git) {
+  const mergeBase = git.mergeBase(input.base, input.head);
+  const full = (reason) => ({ mode: "full", reason, mergeBase, since: null });
+  const { state } = input;
+  if (input.full)
+    return full("Full review requested.");
+  if (!state)
+    return full("First review of this pull request.");
+  if (state.baseRef !== input.baseRef)
+    return full(`The base branch changed from ${state.baseRef} to ${input.baseRef}.`);
+  if (state.head === input.head) {
+    return input.manual ? { mode: "revisit", reason: "Requested again with no new commits.", mergeBase, since: null } : { mode: "skip", reason: `No new commits since the review of ${state.head.slice(0, 7)}.`, mergeBase };
+  }
+  let ancestor = false;
+  try {
+    ancestor = git.isAncestor(state.head, input.head);
+  } catch {
+    ancestor = false;
+  }
+  if (!ancestor)
+    return full(`The last reviewed commit ${state.head.slice(0, 7)} is no longer in this branch's history.`);
+  if (state.mergeBase !== mergeBase)
+    return full("The branch picked up new commits from the base branch.");
+  return { mode: "incremental", reason: `Changes since ${state.head.slice(0, 7)}.`, mergeBase, since: state.head };
+}
 
-// src/collect.ts
-var lockfiles = [":(exclude)bun.lock", ":(exclude)package-lock.json", ":(exclude)yarn.lock", ":(exclude)pnpm-lock.yaml"];
-function git(args) {
-  return command("git", ["-c", "core.quotePath=false", ...args]);
-}
-function writeJson(name, value) {
-  writeFileSync(join2(directory, name), JSON.stringify(value, null, 2));
-}
+// src/diff.ts
 function addedLines(diff) {
   const added = {};
   let lines = [];
@@ -5685,6 +5734,73 @@ function addedLines(diff) {
   }
   return added;
 }
+
+// src/github.ts
+import { execFileSync } from "node:child_process";
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
+var directory = join(process.cwd(), ".github", "redline");
+var userSchema = NullOr(Struct({ login: String4, type: String4 }));
+var pullSchema = Struct({
+  number: Number5,
+  title: String4,
+  user: userSchema,
+  body: NullOr(String4),
+  state: String4,
+  draft: Boolean3,
+  head: Struct({ sha: String4, repo: NullOr(Struct({ full_name: String4 })) }),
+  base: Struct({ sha: String4, ref: String4 })
+});
+var commentSchema = Struct({
+  body: NullOr(String4),
+  user: userSchema,
+  created_at: optional2(String4),
+  submitted_at: optional2(NullOr(String4)),
+  commit_id: optional2(NullOr(String4)),
+  path: optional2(String4),
+  line: optional2(NullOr(Number5))
+});
+function safeText(text) {
+  return text.replaceAll(/<!--[\s\S]*?-->/g, "").replaceAll(/@(?=[\w-])/g, "@​");
+}
+function log(message) {
+  console.log(message);
+  if (process.env.GITHUB_STEP_SUMMARY)
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${message}
+`);
+}
+function output(name, value) {
+  if (process.env.GITHUB_OUTPUT)
+    appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}
+`);
+}
+function command(program, args, input, cwd) {
+  return execFileSync(program, args, { input, cwd, encoding: "utf8", stdio: "pipe", maxBuffer: 50 * 1024 * 1024, timeout: 120000 });
+}
+function git(args, cwd) {
+  return command("git", ["-c", "core.quotePath=false", ...args], undefined, cwd);
+}
+function api(args, schema) {
+  const data = JSON.parse(command("gh", ["api", ...args]));
+  return decodeUnknownSync(schema)(data);
+}
+function pages(path, schema) {
+  return api(["--paginate", "--slurp", path], ArraySchema(ArraySchema(schema))).flat();
+}
+function main(run) {
+  try {
+    run();
+  } catch (error) {
+    log(`Redline failed: ${safeText(errorMessage(error))}`);
+    process.exitCode = 1;
+  }
+}
+
+// src/collect.ts
+var lockfiles = [":(exclude)bun.lock", ":(exclude)package-lock.json", ":(exclude)yarn.lock", ":(exclude)pnpm-lock.yaml"];
+function writeJson(name, value) {
+  writeFileSync(join2(directory, name), JSON.stringify(value, null, 2));
+}
 function related(functions) {
   const declaration = /^[ +-](?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\*?|class|const|let|var|def|func|fn)\s+([A-Za-z_$][\w$]{2,})/gm;
   const names = [...new Set([...functions.matchAll(declaration)].flatMap((match) => match[1] ?? []))];
@@ -5704,38 +5820,82 @@ ${grep(name).map((hit) => `- ${hit}`).join(`
 `);
 }
 main(() => {
+  const trigger = readJson(process.env.REDLINE_TRIGGER ?? "", triggerSchema);
   const run = decodeUnknownSync(runSchema)({
     repository: process.env.GITHUB_REPOSITORY,
-    pr: Number(process.env.PR_NUMBER),
-    head: process.env.HEAD_SHA,
-    base: process.env.BASE_SHA,
+    pr: trigger.pr,
+    head: trigger.head,
+    base: trigger.base,
     maxFindings: Number(process.env.MAX_FINDINGS),
     failOn: process.env.FAIL_ON
   });
   const endpoint = `repos/${run.repository}/pulls/${run.pr}`;
   const pull = api([endpoint], pullSchema);
+  const reviews = pages(`${endpoint}/reviews?per_page=100`, commentSchema);
+  const state = latestState(reviews);
+  const selected = plan({ ...trigger, state }, {
+    mergeBase: (a, b) => git(["merge-base", a, b]).trim(),
+    isAncestor: (a, b) => {
+      try {
+        git(["merge-base", "--is-ancestor", a, b]);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  });
+  if (selected.mode === "skip") {
+    log(`${selected.reason} Comment \`/redline review\` to review it again.`);
+    output("review", "false");
+    return;
+  }
   const relevant = (item) => Boolean(item.body) && (item.user?.type === "User" || Boolean(item.body?.startsWith(marker)));
-  const entry = (kind) => (item) => ({ kind, author: item.user?.login, at: item.created_at ?? item.submitted_at, path: item.path, line: item.line, body: item.body });
+  const entry = (kind) => (item) => ({ kind, author: item.user?.login, at: item.created_at ?? item.submitted_at, path: item.path, line: item.line, body: stripState(item.body ?? "") });
   const conversation = [
     ...pages(`repos/${run.repository}/issues/${run.pr}/comments?per_page=100`, commentSchema).filter(relevant).map(entry("comment")),
-    ...pages(`${endpoint}/reviews?per_page=100`, commentSchema).filter(relevant).map(entry("review")),
+    ...reviews.filter(relevant).map(entry("review")),
     ...pages(`${endpoint}/comments?per_page=100`, commentSchema).filter(relevant).map(entry("inline"))
   ].toSorted((a, b) => (a.at ?? "").localeCompare(b.at ?? ""));
-  const mergeBase = git(["merge-base", run.base, run.head]).trim();
-  const files = git(["diff", "--name-only", "-z", "--find-renames", mergeBase, run.head]).split("\x00").filter(Boolean);
-  const diffWith = (...flags) => git(["diff", "--no-ext-diff", "--no-textconv", "--find-renames", ...flags, mergeBase, run.head, "--", ".", ...lockfiles]);
-  const diff = diffWith();
+  const from = selected.since ?? selected.mergeBase;
+  const changedFiles = (start) => git(["diff", "--name-only", "-z", "--find-renames", start, run.head]).split("\x00").filter(Boolean);
+  const diffWith = (start, ...flags) => git(["diff", "--no-ext-diff", "--no-textconv", "--find-renames", ...flags, start, run.head, "--", ".", ...lockfiles]);
+  const files = changedFiles(from);
+  const diff = diffWith(from);
   if (files.length > 200 || diff.length > 300000) {
     throw new Error("PR too large to review: split PRs over 200 files or 300,000 diff characters.");
   }
-  const functions = diffWith("--function-context");
+  const functions = diffWith(from, "--function-context");
+  const prDiff = selected.mode === "incremental" ? diffWith(selected.mergeBase) : diff;
   rmSync(directory, { recursive: true, force: true });
   mkdirSync(directory, { recursive: true });
   writeFileSync(join2(directory, "diff.patch"), diff);
   writeFileSync(join2(directory, "functions.patch"), functions);
   writeFileSync(join2(directory, "related.md"), related(functions));
-  writeJson("context.json", { ...run, addedLines: addedLines(diff) });
-  writeJson("pr.json", { title: pull.title, description: pull.body, files, conversation });
+  if (selected.mode === "incremental")
+    writeFileSync(join2(directory, "pr.patch"), prDiff);
+  const context = {
+    ...run,
+    mode: selected.mode,
+    reason: selected.reason,
+    since: selected.since,
+    baseRef: trigger.baseRef,
+    mergeBase: selected.mergeBase,
+    nextId: state?.nextId ?? 1,
+    previous: state?.findings ?? [],
+    addedLines: addedLines(prDiff)
+  };
+  writeJson("context.json", context);
+  writeJson("pr.json", {
+    title: pull.title,
+    description: pull.body,
+    review: { mode: selected.mode, reason: selected.reason, since: selected.since, requested: trigger.manual },
+    files,
+    ...selected.mode === "incremental" ? { prFiles: changedFiles(selected.mergeBase) } : {},
+    previousFindings: context.previous,
+    conversation
+  });
+  if (trigger.instructions)
+    writeFileSync(join2(directory, "request.md"), trigger.instructions);
   const instructions = join2(directory, "instructions.md");
   try {
     writeFileSync(instructions, git(["show", `${run.base}:.github/redline/instructions.md`]));
@@ -5743,5 +5903,6 @@ main(() => {
     rmSync(instructions, { force: true });
     log("No .github/redline/instructions.md on the base branch. Using the default review.");
   }
-  log(`Prepared PR #${run.pr} at ${run.head}: ${files.length} changed files, ${conversation.length} discussion entries.`);
+  output("review", "true");
+  log(`Prepared ${selected.mode} review of PR #${run.pr} at ${run.head}: ${selected.reason} ${files.length} changed files, ${context.previous.length} earlier findings, ${conversation.length} discussion entries.`);
 });

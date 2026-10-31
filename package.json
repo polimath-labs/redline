@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "typecheck": "bun check",
-    "build": "bun build src/collect.ts src/publish.ts --target node --outdir dist",
+    "build": "bun build src/resolve.ts src/collect.ts src/publish.ts --target node --outdir dist",
     "prepare": "husky"
   },
   "dependencies": {

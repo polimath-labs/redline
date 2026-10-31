@@ -3,10 +3,8 @@ name: redline
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, closed]
-
-concurrency:
-  group: redline-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: read
@@ -14,6 +12,16 @@ permissions:
 
 jobs:
   review:
+    # Unrelated comments skip the job, so they never start a runner or join the concurrency group.
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/redline review') &&
+       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    # Automatic and requested reviews share one group per PR. A push cancels a running review; a request waits its turn.
+    concurrency:
+      group: redline-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
     runs-on: ubuntu-latest
     steps:
       - uses: polimath-labs/redline@v1

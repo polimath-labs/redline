@@ -5539,6 +5539,16 @@ import { readFileSync } from "node:fs";
 var text = (max) => String4.check(isMinLength(1), isMaxLength(max));
 var positiveInt = Int.check(isGreaterThan2(0));
 var sha = String4.check(isPattern2(/^[a-f0-9]{40}$/));
+var severity = Literals(["high", "medium", "low"]);
+var findingId = String4.check(isPattern2(/^F[1-9]\d{0,4}$/));
+var findingFields = {
+  severity,
+  path: text(500),
+  line: positiveInt,
+  title: text(100),
+  problem: text(500),
+  fix: text(350)
+};
 var reviewSchema = Struct({
   status: Literals(["complete", "incomplete"]),
   changes: ArraySchema(text(160)).check(isMinLength(1), isMaxLength(4)),
@@ -5548,14 +5558,29 @@ var reviewSchema = Struct({
     level: Literals(["low", "medium", "high"]),
     reason: text(300)
   }),
-  findings: ArraySchema(Struct({
-    severity: Literals(["high", "medium", "low"]),
-    path: text(500),
-    line: positiveInt,
-    title: text(100),
-    problem: text(500),
-    fix: text(350)
+  findings: ArraySchema(Struct(findingFields)),
+  previous: ArraySchema(Struct({
+    id: findingId,
+    status: Literals(["open", "fixed"])
   }))
+});
+var storedFindingSchema = Struct({ id: findingId, ...findingFields, commit: sha });
+var stateSchema = Struct({
+  version: Literal2(1),
+  head: sha,
+  baseRef: String4,
+  mergeBase: sha,
+  nextId: positiveInt,
+  findings: ArraySchema(storedFindingSchema)
+});
+var triggerSchema = Struct({
+  pr: positiveInt,
+  head: sha,
+  base: sha,
+  baseRef: String4,
+  manual: Boolean3,
+  full: Boolean3,
+  instructions: String4
 });
 var runSchema = Struct({
   repository: String4.check(isPattern2(/^[\w.-]+\/[\w.-]+$/)),
@@ -5567,6 +5592,13 @@ var runSchema = Struct({
 });
 var contextSchema = Struct({
   ...runSchema.fields,
+  mode: Literals(["full", "incremental", "revisit"]),
+  reason: String4,
+  since: NullOr(sha),
+  baseRef: String4,
+  mergeBase: sha,
+  nextId: positiveInt,
+  previous: ArraySchema(storedFindingSchema),
   addedLines: Record(String4, ArraySchema(positiveInt))
 });
 var marker = "<!-- redline -->";
@@ -5577,23 +5609,41 @@ function readJson(path, schema) {
   const data = JSON.parse(readFileSync(path, "utf8"));
   return decodeUnknownSync(schema)(data);
 }
+var sameFinding = (a, b) => a.path === b.path && a.title.trim().toLowerCase() === b.title.trim().toLowerCase();
 function validateReview(input, context) {
   const report = decodeUnknownSync(reviewSchema, { onExcessProperty: "error" })(input);
   if (report.findings.length > context.maxFindings)
-    throw new Error(`At most ${context.maxFindings} findings. Keep the strongest.`);
-  const has = (severity) => report.findings.some((finding) => finding.severity === severity);
+    throw new Error(`At most ${context.maxFindings} new findings. Keep the strongest.`);
+  const known = new Map(context.previous.map((finding) => [finding.id, finding]));
+  const statuses = new Map;
+  for (const entry of report.previous) {
+    if (!known.has(entry.id))
+      throw new Error(`Unknown previous finding: ${entry.id}. Use only ids from previousFindings in pr.json.`);
+    if (statuses.has(entry.id))
+      throw new Error(`Previous finding listed twice: ${entry.id}`);
+    statuses.set(entry.id, entry.status);
+  }
+  const missing = context.previous.filter((finding) => !statuses.has(finding.id)).map((finding) => finding.id);
+  if (missing.length > 0)
+    throw new Error(`Give a status for every previous finding. Missing: ${missing.join(", ")}`);
+  const stillOpen = context.previous.filter((finding) => statuses.get(finding.id) === "open");
+  const open = [...report.findings, ...stillOpen];
+  const has = (level) => open.some((finding) => finding.severity === level);
   if (report.status === "incomplete" && report.gaps.length === 0)
     throw new Error("An incomplete review must list the changed code it didn't read in gaps.");
   if (has("high") && report.mergeRisk.level !== "high")
-    throw new Error("A high-severity finding requires high merge risk.");
+    throw new Error("A high-severity finding, new or still open, requires high merge risk.");
   if (report.mergeRisk.level === "low" && (report.status === "incomplete" || has("medium"))) {
-    throw new Error("Incomplete coverage or medium-severity findings require at least medium merge risk.");
+    throw new Error("Incomplete coverage or medium-severity findings, new or still open, require at least medium merge risk.");
   }
   const seen = new Set;
   for (const finding of report.findings) {
     if (!context.addedLines[finding.path]?.includes(finding.line)) {
       throw new Error(`Finding must target an added line: ${finding.path}:${finding.line}`);
     }
+    const earlier = context.previous.find((item) => sameFinding(item, finding));
+    if (earlier)
+      throw new Error(`${earlier.id} already reports "${earlier.title}". Give its status in previous instead of reporting it again.`);
     const key = `${finding.path}:${finding.line}:${finding.title.toLowerCase()}`;
     if (seen.has(key))
       throw new Error(`Duplicate finding: ${key}`);
@@ -5607,18 +5657,21 @@ function validateReview(input, context) {
 var directory = join(process.cwd(), ".github", "redline");
 var userSchema = NullOr(Struct({ login: String4, type: String4 }));
 var pullSchema = Struct({
+  number: Number5,
   title: String4,
   user: userSchema,
   body: NullOr(String4),
   state: String4,
   draft: Boolean3,
-  head: Struct({ sha: String4 })
+  head: Struct({ sha: String4, repo: NullOr(Struct({ full_name: String4 })) }),
+  base: Struct({ sha: String4, ref: String4 })
 });
 var commentSchema = Struct({
   body: NullOr(String4),
   user: userSchema,
   created_at: optional2(String4),
   submitted_at: optional2(NullOr(String4)),
+  commit_id: optional2(NullOr(String4)),
   path: optional2(String4),
   line: optional2(NullOr(Number5))
 });
@@ -5631,8 +5684,16 @@ function log(message) {
     appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${message}
 `);
 }
-function command(program, args, input) {
-  return execFileSync(program, args, { input, encoding: "utf8", stdio: "pipe", maxBuffer: 50 * 1024 * 1024, timeout: 120000 });
+function output(name, value) {
+  if (process.env.GITHUB_OUTPUT)
+    appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}
+`);
+}
+function command(program, args, input, cwd) {
+  return execFileSync(program, args, { input, cwd, encoding: "utf8", stdio: "pipe", maxBuffer: 50 * 1024 * 1024, timeout: 120000 });
+}
+function git(args, cwd) {
+  return command("git", ["-c", "core.quotePath=false", ...args], undefined, cwd);
 }
 function api(args, schema) {
   const data = JSON.parse(command("gh", ["api", ...args]));
@@ -5650,10 +5711,66 @@ function main(run) {
   }
 }
 
-// src/publish.ts
+// src/checkpoint.ts
+import { deflateRawSync, inflateRawSync } from "node:zlib";
+var botLogin = "github-actions[bot]";
+var statePattern = /<!-- redline:state ([A-Za-z0-9_-]+) -->/;
+function encodeState(state) {
+  return `<!-- redline:state ${deflateRawSync(JSON.stringify(state)).toString("base64url")} -->`;
+}
+function decodeState(body) {
+  const match = statePattern.exec(body);
+  if (!match?.[1])
+    return;
+  try {
+    return decodeUnknownSync(stateSchema)(JSON.parse(inflateRawSync(Buffer.from(match[1], "base64url"), { maxOutputLength: 1e6 }).toString("utf8")));
+  } catch {
+    return;
+  }
+}
+function stripState(body) {
+  return body.replace(statePattern, "").trim();
+}
+function latestState(reviews) {
+  for (const review of reviews.toReversed()) {
+    if (review.user?.login !== botLogin || review.user.type !== "Bot" || !review.body)
+      continue;
+    const state = decodeState(review.body);
+    if (state && state.head === review.commit_id)
+      return state;
+  }
+  return;
+}
+function plan(input, git) {
+  const mergeBase = git.mergeBase(input.base, input.head);
+  const full = (reason) => ({ mode: "full", reason, mergeBase, since: null });
+  const { state } = input;
+  if (input.full)
+    return full("Full review requested.");
+  if (!state)
+    return full("First review of this pull request.");
+  if (state.baseRef !== input.baseRef)
+    return full(`The base branch changed from ${state.baseRef} to ${input.baseRef}.`);
+  if (state.head === input.head) {
+    return input.manual ? { mode: "revisit", reason: "Requested again with no new commits.", mergeBase, since: null } : { mode: "skip", reason: `No new commits since the review of ${state.head.slice(0, 7)}.`, mergeBase };
+  }
+  let ancestor = false;
+  try {
+    ancestor = git.isAncestor(state.head, input.head);
+  } catch {
+    ancestor = false;
+  }
+  if (!ancestor)
+    return full(`The last reviewed commit ${state.head.slice(0, 7)} is no longer in this branch's history.`);
+  if (state.mergeBase !== mergeBase)
+    return full("The branch picked up new commits from the base branch.");
+  return { mode: "incremental", reason: `Changes since ${state.head.slice(0, 7)}.`, mergeBase, since: state.head };
+}
+
+// src/report.ts
 var label = { high: "High", medium: "Medium", low: "Low" };
 var headline = { low: "Good to merge", medium: "Needs a decision before merging", high: "Don't merge yet" };
-var rank = { low: 0, medium: 1, high: 2, never: 3 };
+var priority = { high: 0, medium: 1, low: 2 };
 var readme = "https://github.com/polimath-labs/redline#readme";
 var list = (items) => items.map((item) => `- ${safeText(item)}`).join(`
 `);
@@ -5661,6 +5778,106 @@ var cell = (text) => safeText(text).replaceAll("|", "\\|");
 var explain = (finding) => `${safeText(finding.problem)}
 
 **Fix.** ${safeText(finding.fix)}`;
+var short = (sha) => sha.slice(0, 7);
+function nextState(context, review) {
+  const status = new Map(review.previous.map((entry) => [entry.id, entry.status]));
+  const kept = context.previous.filter((finding) => status.get(finding.id) !== "fixed");
+  const fixed = context.previous.filter((finding) => status.get(finding.id) === "fixed");
+  const added = review.findings.map((finding, index) => ({ id: `F${context.nextId + index}`, ...finding, commit: context.head }));
+  const open = [...added, ...kept].toSorted((a, b) => priority[a.severity] - priority[b.severity]);
+  return {
+    state: {
+      version: 1,
+      head: context.head,
+      baseRef: context.baseRef,
+      mergeBase: context.mergeBase,
+      nextId: context.nextId + added.length,
+      findings: open
+    },
+    added,
+    open,
+    fixed
+  };
+}
+function render(context, review, author, posted) {
+  const { state, added, open, fixed } = nextState(context, review);
+  const isNew = new Set(added.map((finding) => finding.id));
+  const tracked = context.previous.length > 0;
+  const location = (finding) => {
+    const path = finding.path.split("/").map(encodeURIComponent).join("/").replaceAll("(", "%28").replaceAll(")", "%29");
+    return `[\`${cell(finding.path.split("/").at(-1) ?? finding.path)}:${finding.line}\`](https://github.com/${context.repository}/blob/${finding.commit}/${path}#L${finding.line})`;
+  };
+  const comments = added.map((finding) => ({
+    path: finding.path,
+    line: finding.line,
+    side: "RIGHT",
+    body: `${marker}
+**${label[finding.severity]} · ${safeText(finding.title)}**
+
+${explain(finding)}`
+  })).filter((comment) => !posted.has(comment.body));
+  const table = open.length === 0 ? "No open findings." : [
+    tracked ? "| Severity | Finding | Location | Status |" : "| Severity | Finding | Location |",
+    tracked ? "|---|---|---|---|" : "|---|---|---|",
+    ...open.map((finding) => {
+      const row = `| ${label[finding.severity]} | ${cell(finding.title)} | ${location(finding)} |`;
+      return tracked ? `${row} ${isNew.has(finding.id) ? "New" : "Still open"} |` : row;
+    })
+  ].join(`
+`);
+  const resolved = fixed.length === 0 ? "" : `<details>
+<summary>Fixed since the last review (${fixed.length})</summary>
+
+${list(fixed.map((finding) => finding.title))}
+
+</details>`;
+  const incomplete = review.status === "incomplete" ? "This review didn't cover every change. The list below says what's left." : "";
+  const gaps = review.gaps.length === 0 ? "" : `<details${incomplete ? " open" : ""}>
+<summary>Still to check (${review.gaps.length})</summary>
+
+${list(review.gaps)}
+
+</details>`;
+  const mention = review.mergeRisk.level !== "low" && author?.type === "User" ? `@${author.login}` : "";
+  const commit = (sha) => `[\`${short(sha)}\`](https://github.com/${context.repository}/commit/${sha})`;
+  const scope = context.mode === "incremental" && context.since ? `Review of changes from ${commit(context.since)} to ${commit(context.head)}` : context.mode === "revisit" ? `Review of ${commit(context.head)} on request` : `Review of ${commit(context.head)}`;
+  const body = (...extra) => [
+    marker,
+    `## ${headline[review.mergeRisk.level]}`,
+    mention,
+    `**${label[review.mergeRisk.level]} merge risk.** ${safeText(review.mergeRisk.reason)}`,
+    table,
+    resolved,
+    `**What changed**
+
+${list(review.changes)}`,
+    `<details>
+<summary>What I checked (${review.checked.length})</summary>
+
+${list(review.checked)}
+
+</details>`,
+    incomplete,
+    gaps,
+    ...extra,
+    `<sub>${scope} via [Redline](${readme})</sub>`,
+    encodeState(state)
+  ].filter(Boolean).join(`
+
+`);
+  return {
+    body: body(),
+    fallbackBody: body(...added.map((finding) => `### ${label[finding.severity]} · ${safeText(finding.title)}
+
+${location(finding)}
+
+${explain(finding)}`)),
+    comments
+  };
+}
+
+// src/publish.ts
+var rank = { low: 0, medium: 1, high: 2, never: 3 };
 main(() => {
   const context = readJson(join2(directory, "context.json"), contextSchema);
   const report = validateReview(readJson(join2(directory, "review.json"), Unknown2), context);
@@ -5671,67 +5888,15 @@ main(() => {
     return;
   }
   const posted = new Set(pages(`${endpoint}/comments?per_page=100`, commentSchema).map((item) => item.body));
-  const location = (finding) => {
-    const path = finding.path.split("/").map(encodeURIComponent).join("/").replaceAll("(", "%28").replaceAll(")", "%29");
-    return `[\`${cell(finding.path.split("/").at(-1) ?? finding.path)}:${finding.line}\`](https://github.com/${context.repository}/blob/${context.head}/${path}#L${finding.line})`;
-  };
-  const comments = report.findings.map((finding) => ({
-    path: finding.path,
-    line: finding.line,
-    side: "RIGHT",
-    body: `${marker}
-**${label[finding.severity]} · ${safeText(finding.title)}**
-
-${explain(finding)}`
-  })).filter((comment) => !posted.has(comment.body));
-  const table = report.findings.length === 0 ? "No findings." : [
-    "| Severity | Finding | Location |",
-    "|---|---|---|",
-    ...report.findings.map((finding) => `| ${label[finding.severity]} | ${cell(finding.title)} | ${location(finding)} |`)
-  ].join(`
-`);
-  const incomplete = report.status === "incomplete" ? "This review didn't cover every change. The list below says what's left." : "";
-  const gaps = report.gaps.length === 0 ? "" : `<details${incomplete ? " open" : ""}>
-<summary>Still to check (${report.gaps.length})</summary>
-
-${list(report.gaps)}
-
-</details>`;
-  const mention = report.mergeRisk.level !== "low" && pull.user?.type === "User" ? `@${pull.user.login}` : "";
-  const body = (...extra) => [
-    marker,
-    `## ${headline[report.mergeRisk.level]}`,
-    mention,
-    `**${label[report.mergeRisk.level]} merge risk.** ${safeText(report.mergeRisk.reason)}`,
-    table,
-    `**What changed**
-
-${list(report.changes)}`,
-    `<details>
-<summary>What I checked (${report.checked.length})</summary>
-
-${list(report.checked)}
-
-</details>`,
-    incomplete,
-    gaps,
-    ...extra,
-    `<sub>Review of [\`${context.head.slice(0, 7)}\`](https://github.com/${context.repository}/commit/${context.head}) via [Redline](${readme})</sub>`
-  ].filter(Boolean).join(`
-
-`);
+  const rendered = render(context, report, pull.user, posted);
   const post = (review) => command("gh", ["api", `${endpoint}/reviews`, "--method", "POST", "--input", "-"], JSON.stringify({ commit_id: context.head, event: "COMMENT", ...review }));
   try {
-    post({ body: body(), comments });
-    log(`Posted ${report.mergeRisk.level}-risk review on PR #${context.pr} with ${comments.length} inline comments.`);
+    post({ body: rendered.body, comments: rendered.comments });
+    log(`Posted ${report.mergeRisk.level}-risk ${context.mode} review on PR #${context.pr} with ${rendered.comments.length} inline comments.`);
   } catch (error) {
     log(`Inline comments rejected, posting findings in the summary: ${errorMessage(error)}`);
-    post({ body: body(...report.findings.map((finding) => `### ${label[finding.severity]} · ${safeText(finding.title)}
-
-${location(finding)}
-
-${explain(finding)}`)), comments: [] });
-    log(`Posted ${report.mergeRisk.level}-risk review on PR #${context.pr} with findings in the summary.`);
+    post({ body: rendered.fallbackBody, comments: [] });
+    log(`Posted ${report.mergeRisk.level}-risk ${context.mode} review on PR #${context.pr} with findings in the summary.`);
   }
   if (rank[report.mergeRisk.level] >= rank[context.failOn]) {
     console.log(`::error::Redline found ${report.mergeRisk.level} merge risk. See the review on PR #${context.pr}.`);

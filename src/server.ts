@@ -31,7 +31,7 @@ export default Plugin.define({
     yield* ctx.tool.transform((editor) => {
       editor.add({
         name: "submit_review",
-        description: "Submit the finished review. Use status incomplete only when changed code you needed went unread, and list it in gaps. Findings must target added lines in the PR.",
+        description: "Submit the finished review. Use status incomplete only when changed code you needed went unread, and list it in gaps. findings holds new findings only, each on a line the PR adds. previous gives every earlier finding from pr.json a status: fixed only when the current code no longer has the defect, otherwise open.",
         input: reviewSchema,
         options: { codemode: false },
         execute: (input) => Effect.sync(() => {

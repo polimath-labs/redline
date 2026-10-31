@@ -23,10 +23,8 @@ name: redline
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, closed]
-
-concurrency:
-  group: redline-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: read
@@ -34,6 +32,16 @@ permissions:
 
 jobs:
   review:
+    # Unrelated comments skip the job, so they never start a runner or join the concurrency group.
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/redline review') &&
+       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    # Automatic and requested reviews share one group per PR. A push cancels a running review; a request waits its turn.
+    concurrency:
+      group: redline-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
     runs-on: ubuntu-latest
     steps:
       - uses: polimath-labs/redline@v1
@@ -41,11 +49,11 @@ jobs:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
 ```
 
-3. Merge it into your default branch. `pull_request_target` only runs workflows from there.
+3. Merge it into your default branch. `pull_request_target` and `issue_comment` only run workflows from there.
 
-> We use `pull_request_target` so the workflow always comes from your default branch. A pull request shouldn't change how it gets reviewed.
+> We use `pull_request_target` and `issue_comment` so the workflow always comes from your default branch. A pull request or a comment shouldn't change how it gets reviewed.
 
-You can now open a pull request, and `github-actions[bot]` posts the review a few minutes later. The workflow needs `pull-requests: write` to post it.
+You can now open a pull request, and `github-actions[bot]` posts the review a few minutes later. The workflow needs `pull-requests: write` to post reviews and react to commands, and `contents: read` to check out the code.
 
 Redline runs on Linux x64 runners only, like `ubuntu-latest`.
 
@@ -119,11 +127,34 @@ A high risk fails the run after the review posts, so the pull request shows a fa
 | `max_findings` | `10`                        | The most findings one review can post.                                 |
 | `fail_on`      | `high`                      | Fail the run at this merge risk or above: `high`, `medium` or `never`. |
 
+## Request a review
+
+Anyone with write, maintain or admin access can ask for another review in a pull request comment:
+
+```text
+/redline review
+/redline review Check the timeout handling again.
+/redline review --full
+/redline review --full Focus on the migration.
+```
+
+The command must start the comment. Text after it adds focus to the review on top of your team rules, and never replaces them. Redline reacts with 👀 when it accepts the command, and with 😕 when it declines one, such as on a draft. Comments from anyone else are ignored and cost nothing.
+
+- With new commits, Redline reviews what changed since its last review.
+- With no new commits, it looks at the pull request again with your instructions and its earlier findings.
+- `--full` reviews the whole pull request, ignoring the last review.
+
+Commands need the `issue_comment` trigger and the job's `if` from the [setup](#setup) workflow. Edited comments don't count. Run the workflow from your default branch. Fork, draft and closed pull requests are skipped, the same as for automatic reviews.
+
 ## When it runs
 
-- Every push starts a fresh review and cancels the one in progress. Closing the pull request cancels it too.
-- To review the same commit again, open the run in the Actions tab and choose Re-run jobs.
-- Pull request comments that are still open count toward the merge risk.
+- The first review covers the whole pull request. After that, each push reviews only the commits since the last posted review. The agent can still read any file it needs.
+- Redline falls back to a full review when the branch was rebased or force-pushed, merged the base branch in, or changed its base branch.
+- Every push starts a review and cancels the one in progress. Closing the pull request cancels it too. A requested review waits for the running one to finish.
+- A review only counts once it posts. A failed or cancelled run leaves its commits for the next one, and so do commits pushed while a review runs.
+- Once a review posts, reopening the pull request or re-running the job with no new commits doesn't start another one. Use `/redline review` to get one.
+- Each finding keeps its place across reviews. Later reviews mark it still open or fixed, and only new findings get inline comments.
+- Findings that are still open count toward the merge risk, and so do pull request comments.
 - Drafts wait until they're marked ready.
 - Pull requests over 200 files or 300,000 characters of diff are too large to review. Split them up.
 - Lockfiles are left out of the diff.
@@ -132,4 +163,6 @@ A high risk fails the run after the review posts, so the pull request shows a fa
 
 - The agent can read and search files. It can't run commands, edit files or fetch URLs.
 - Reviews post with the workflow's own `GITHUB_TOKEN`, and the agent never sees it. Nothing calls our servers.
+- Redline checks a commenter's access with the GitHub API before it runs. Their instructions reach the agent as a file and never run as a command.
+- Redline keeps its progress in a hidden note in its own review. It only trusts notes posted by `github-actions[bot]`.
 - Pull requests from forks are skipped. A stranger's pull request could hide instructions that trick the model into leaking your key.
