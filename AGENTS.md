@@ -6,7 +6,7 @@ Redline ignores this file when it reviews a pull request. It guides work on Redl
 
 ## Principles
 
-We build Redline for ourselves, but others should adopt it in minutes. Check every change against these.
+Redline is built so anyone can adopt it and start reviewing in a few minutes. Check every change against these.
 
 - **Small defaults.** The default workflow template stays short and works with no configuration.
 - **Flexible, not bloated.** New behavior is opt-in. Each option needs a real use case and never lengthens the default template.
