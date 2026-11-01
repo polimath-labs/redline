@@ -39,7 +39,15 @@ main(() => {
     }))
     .filter((comment) => !posted.has(comment.body));
 
-  const table = report.findings.length === 0 ? "No findings." : [
+  const fixed = new Set(report.previous.filter((entry) => entry.status === "fixed").map((entry) => entry.id));
+  const earlier = (status: boolean) => context.previous.filter((finding) => fixed.has(finding.id) === status);
+  const link = (finding: (typeof context.previous)[number]) => `- [${safeText(finding.title)}](${finding.url})`;
+  const stillOpen = earlier(false).length === 0 ? "" : `**Still open from earlier reviews**\n\n${earlier(false).map(link).join("\n")}`;
+  const resolved = earlier(true).length === 0 ? "" : `**Fixed since the last review**\n\n${earlier(true).map(link).join("\n")}`;
+  const scope = context.mode === "incremental" && context.since
+    ? `changes from [\`${context.since.slice(0, 7)}\`](https://github.com/${context.repository}/commit/${context.since}) to `
+    : "";
+  const table = report.findings.length === 0 ? (context.previous.length > 0 ? "No new findings." : "No findings.") : [
     "| Severity | Finding | Location |",
     "|---|---|---|",
     ...report.findings.map((finding) => `| ${label[finding.severity]} | ${cell(finding.title)} | ${location(finding)} |`),
@@ -54,24 +62,37 @@ main(() => {
     mention,
     `**${label[report.mergeRisk.level]} merge risk.** ${safeText(report.mergeRisk.reason)}`,
     table,
+    stillOpen,
+    resolved,
     `**What changed**\n\n${list(report.changes)}`,
     `<details>\n<summary>What I checked (${report.checked.length})</summary>\n\n${list(report.checked)}\n\n</details>`,
     incomplete,
     gaps,
     ...extra,
-    `<sub>Review of [\`${context.head.slice(0, 7)}\`](https://github.com/${context.repository}/commit/${context.head}) via [Redline](${readme})</sub>`,
+    `<sub>Review of ${scope}[\`${context.head.slice(0, 7)}\`](https://github.com/${context.repository}/commit/${context.head}) via [Redline](${readme})</sub>`,
+    // The next run checks this to catch a pull request moved to another base branch.
+    `<!-- redline:base ${encodeURIComponent(context.baseRef)} -->`,
   ].filter(Boolean).join("\n\n");
   const post = (review: { body: string; comments: typeof comments }) =>
     command("gh", ["api", `${endpoint}/reviews`, "--method", "POST", "--input", "-"], JSON.stringify({ commit_id: context.head, event: "COMMENT", ...review }));
 
   try {
     post({ body: body(), comments });
-    log(`Posted ${report.mergeRisk.level}-risk review on PR #${context.pr} with ${comments.length} inline comments.`);
+    log(`Posted ${report.mergeRisk.level}-risk ${context.mode} review on PR #${context.pr} with ${comments.length} inline comments.`);
   } catch (error) {
     log(`Inline comments rejected, posting findings in the summary: ${errorMessage(error)}`);
     post({ body: body(...report.findings.map((finding) => `### ${label[finding.severity]} · ${safeText(finding.title)}\n\n${location(finding)}\n\n${explain(finding)}`)), comments: [] });
-    log(`Posted ${report.mergeRisk.level}-risk review on PR #${context.pr} with findings in the summary.`);
+    log(`Posted ${report.mergeRisk.level}-risk ${context.mode} review on PR #${context.pr} with findings in the summary.`);
   }
+  // Resolve threads only after the review posted, so a failed run leaves every finding open.
+  for (const finding of earlier(true)) {
+    try {
+      command("gh", ["api", "graphql", "-f", "query=mutation($id: ID!) { resolveReviewThread(input: { threadId: $id }) { thread { id } } }", "-f", `id=${finding.thread}`]);
+    } catch (error) {
+      log(`Couldn't resolve the thread for "${safeText(finding.title)}": ${errorMessage(error)}`);
+    }
+  }
+  if (earlier(true).length > 0) log(`Resolved ${earlier(true).length} fixed findings.`);
   if (rank[report.mergeRisk.level] >= rank[context.failOn]) {
     console.log(`::error::Redline found ${report.mergeRisk.level} merge risk. See the review on PR #${context.pr}.`);
     process.exitCode = 1;

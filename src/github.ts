@@ -22,6 +22,7 @@ export const commentSchema = Schema.Struct({
   user: userSchema,
   created_at: Schema.optional(Schema.String),
   submitted_at: Schema.optional(Schema.NullOr(Schema.String)),
+  commit_id: Schema.optional(Schema.NullOr(Schema.String)),
   path: Schema.optional(Schema.String),
   line: Schema.optional(Schema.NullOr(Schema.Number)),
 });
@@ -33,6 +34,10 @@ export function safeText(text: string) {
 export function log(message: string) {
   console.log(message);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${message}\n`);
+}
+
+export function output(name: string, value: string) {
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
 }
 
 export function command(program: string, args: string[], input?: string) {

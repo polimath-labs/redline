@@ -5556,7 +5556,20 @@ var reviewSchema = Struct({
     title: text(100),
     problem: text(500),
     fix: text(350)
+  })),
+  previous: ArraySchema(Struct({
+    id: positiveInt,
+    status: Literals(["open", "fixed"])
   }))
+});
+var triggerSchema = Struct({
+  pr: positiveInt,
+  head: sha,
+  base: sha,
+  baseRef: String4,
+  manual: Boolean3,
+  full: Boolean3,
+  instructions: String4
 });
 var runSchema = Struct({
   repository: String4.check(isPattern2(/^[\w.-]+\/[\w.-]+$/)),
@@ -5566,8 +5579,21 @@ var runSchema = Struct({
   maxFindings: positiveInt,
   failOn: Literals(["high", "medium", "never"])
 });
+var previousSchema = Struct({
+  id: positiveInt,
+  thread: String4,
+  severity: Literals(["high", "medium", "low"]),
+  title: String4,
+  path: String4,
+  line: NullOr(Number5),
+  url: String4
+});
 var contextSchema = Struct({
   ...runSchema.fields,
+  mode: Literals(["full", "incremental", "revisit"]),
+  since: NullOr(sha),
+  baseRef: String4,
+  previous: ArraySchema(previousSchema),
   addedLines: Record(String4, ArraySchema(positiveInt))
 });
 var marker = "<!-- redline -->";
@@ -5582,7 +5608,12 @@ function validateReview(input, context) {
   const report = decodeUnknownSync(reviewSchema, { onExcessProperty: "error" })(input);
   if (report.findings.length > context.maxFindings)
     throw new Error(`At most ${context.maxFindings} findings. Keep the strongest.`);
-  const has = (severity) => report.findings.some((finding) => finding.severity === severity);
+  const unknown = report.previous.find((entry) => !context.previous.some((finding) => finding.id === entry.id));
+  if (unknown)
+    throw new Error(`Unknown previous finding ${unknown.id}. Use the ids in previousFindings.`);
+  const fixed = new Set(report.previous.filter((entry) => entry.status === "fixed").map((entry) => entry.id));
+  const open = [...report.findings, ...context.previous.filter((finding) => !fixed.has(finding.id))];
+  const has = (severity) => open.some((finding) => finding.severity === severity);
   if (report.status === "incomplete" && report.gaps.length === 0)
     throw new Error("An incomplete review must list the changed code it didn't read in gaps.");
   if (has("high") && report.mergeRisk.level !== "high")
@@ -5595,6 +5626,9 @@ function validateReview(input, context) {
     if (!context.addedLines[finding.path]?.includes(finding.line)) {
       throw new Error(`Finding must target an added line: ${finding.path}:${finding.line}`);
     }
+    const earlier = context.previous.find((item) => item.path === finding.path && item.title.toLowerCase() === finding.title.toLowerCase());
+    if (earlier)
+      throw new Error(`Finding ${earlier.id} already reports this. Give its status in previous instead.`);
     const key = `${finding.path}:${finding.line}:${finding.title.toLowerCase()}`;
     if (seen.has(key))
       throw new Error(`Duplicate finding: ${key}`);
@@ -5620,6 +5654,7 @@ var commentSchema = Struct({
   user: userSchema,
   created_at: optional2(String4),
   submitted_at: optional2(NullOr(String4)),
+  commit_id: optional2(NullOr(String4)),
   path: optional2(String4),
   line: optional2(NullOr(Number5))
 });
@@ -5630,6 +5665,11 @@ function log(message) {
   console.log(message);
   if (process.env.GITHUB_STEP_SUMMARY)
     appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${message}
+`);
+}
+function output(name, value) {
+  if (process.env.GITHUB_OUTPUT)
+    appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}
 `);
 }
 function command(program, args, input) {
@@ -5655,6 +5695,59 @@ function main(run) {
 var lockfiles = [":(exclude)bun.lock", ":(exclude)package-lock.json", ":(exclude)yarn.lock", ":(exclude)pnpm-lock.yaml"];
 function git(args) {
   return command("git", ["-c", "core.quotePath=false", ...args]);
+}
+var threadSchema = Struct({
+  id: String4,
+  isResolved: Boolean3,
+  path: String4,
+  line: NullOr(Number5),
+  comments: Struct({
+    nodes: ArraySchema(Struct({ databaseId: Number5, url: String4, body: String4, author: NullOr(Struct({ login: String4 })) }))
+  })
+});
+var threadsQuery = `query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $repo) { pullRequest(number: $pr) { reviewThreads(first: 100, after: $endCursor) {
+    pageInfo { hasNextPage endCursor }
+    nodes { id isResolved path line comments(first: 1) { nodes { databaseId url body author { login } } } }
+  } } }
+}`;
+var heading = /^\*\*(High|Medium|Low) · (.+)\*\*$/m;
+function previousFindings(repository, pr) {
+  const [owner, repo] = repository.split("/");
+  const lines = command("gh", [
+    "api",
+    "graphql",
+    "--paginate",
+    "--jq",
+    ".data.repository.pullRequest.reviewThreads.nodes[]",
+    "-f",
+    `query=${threadsQuery}`,
+    "-f",
+    `owner=${owner}`,
+    "-f",
+    `repo=${repo}`,
+    "-F",
+    `pr=${pr}`
+  ]);
+  return lines.split(`
+`).filter(Boolean).flatMap((line) => {
+    const thread = decodeUnknownSync(threadSchema)(JSON.parse(line));
+    const first = thread.comments.nodes[0];
+    const bot = first?.author?.login === "github-actions" || first?.author?.login === "github-actions[bot]";
+    const match = !thread.isResolved && bot && first?.body.startsWith(marker) ? heading.exec(first.body) : null;
+    if (!first || !match?.[1] || !match[2])
+      return [];
+    const severity = match[1].toLowerCase();
+    return [{ id: first.databaseId, thread: thread.id, severity, title: match[2], path: thread.path, line: thread.line, url: first.url }];
+  });
+}
+function isAncestor(ancestor, head) {
+  try {
+    git(["merge-base", "--is-ancestor", ancestor, head]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 function writeJson(name, value) {
   writeFileSync(join2(directory, name), JSON.stringify(value, null, 2));
@@ -5704,38 +5797,79 @@ ${grep(name).map((hit) => `- ${hit}`).join(`
 `);
 }
 main(() => {
+  const trigger = readJson(process.env.REDLINE_TRIGGER ?? "", triggerSchema);
   const run = decodeUnknownSync(runSchema)({
     repository: process.env.GITHUB_REPOSITORY,
-    pr: Number(process.env.PR_NUMBER),
-    head: process.env.HEAD_SHA,
-    base: process.env.BASE_SHA,
+    pr: trigger.pr,
+    head: trigger.head,
+    base: trigger.base,
     maxFindings: Number(process.env.MAX_FINDINGS),
     failOn: process.env.FAIL_ON
   });
   const endpoint = `repos/${run.repository}/pulls/${run.pr}`;
   const pull = api([endpoint], pullSchema);
+  const reviews = pages(`${endpoint}/reviews?per_page=100`, commentSchema);
   const relevant = (item) => Boolean(item.body) && (item.user?.type === "User" || Boolean(item.body?.startsWith(marker)));
   const entry = (kind) => (item) => ({ kind, author: item.user?.login, at: item.created_at ?? item.submitted_at, path: item.path, line: item.line, body: item.body });
   const conversation = [
     ...pages(`repos/${run.repository}/issues/${run.pr}/comments?per_page=100`, commentSchema).filter(relevant).map(entry("comment")),
-    ...pages(`${endpoint}/reviews?per_page=100`, commentSchema).filter(relevant).map(entry("review")),
+    ...reviews.filter(relevant).map(entry("review")),
     ...pages(`${endpoint}/comments?per_page=100`, commentSchema).filter(relevant).map(entry("inline"))
   ].toSorted((a, b) => (a.at ?? "").localeCompare(b.at ?? ""));
+  const last = reviews.findLast((review) => review.user?.login === "github-actions[bot]" && review.body?.startsWith(marker) && review.commit_id);
+  const since = last?.commit_id ?? undefined;
+  const lastBase = /<!-- redline:base (\S+) -->/.exec(last?.body ?? "")?.[1];
   const mergeBase = git(["merge-base", run.base, run.head]).trim();
-  const files = git(["diff", "--name-only", "-z", "--find-renames", mergeBase, run.head]).split("\x00").filter(Boolean);
-  const diffWith = (...flags) => git(["diff", "--no-ext-diff", "--no-textconv", "--find-renames", ...flags, mergeBase, run.head, "--", ".", ...lockfiles]);
-  const diff = diffWith();
+  const plan = () => {
+    if (trigger.full)
+      return { mode: "full", reason: "Full review requested." };
+    if (!since)
+      return { mode: "full", reason: "First review of this pull request." };
+    if (lastBase !== encodeURIComponent(trigger.baseRef))
+      return { mode: "full", reason: "The base branch changed since the last review." };
+    if (since === run.head) {
+      return trigger.manual ? { mode: "revisit", reason: "Requested again with no new commits." } : { mode: "skip", reason: `No new commits since the review of ${since.slice(0, 7)}.` };
+    }
+    if (!isAncestor(since, run.head))
+      return { mode: "full", reason: `The last reviewed commit ${since.slice(0, 7)} is no longer in this branch.` };
+    if (git(["merge-base", run.base, since]).trim() !== mergeBase)
+      return { mode: "full", reason: "The branch merged in new commits from the base branch." };
+    return { mode: "incremental", reason: `Changes since ${since.slice(0, 7)}.` };
+  };
+  const { mode, reason } = plan();
+  if (mode === "skip") {
+    log(`${reason} Comment \`/redline review\` to review it again.`);
+    output("review", "false");
+    return;
+  }
+  const from = mode === "incremental" && since ? since : mergeBase;
+  const files = git(["diff", "--name-only", "-z", "--find-renames", from, run.head]).split("\x00").filter(Boolean);
+  const diffWith = (start, ...flags) => git(["diff", "--no-ext-diff", "--no-textconv", "--find-renames", ...flags, start, run.head, "--", ".", ...lockfiles]);
+  const diff = diffWith(from);
   if (files.length > 200 || diff.length > 300000) {
     throw new Error("PR too large to review: split PRs over 200 files or 300,000 diff characters.");
   }
-  const functions = diffWith("--function-context");
+  const functions = diffWith(from, "--function-context");
+  const prDiff = from === mergeBase ? diff : diffWith(mergeBase);
+  const previous = previousFindings(run.repository, run.pr);
   rmSync(directory, { recursive: true, force: true });
   mkdirSync(directory, { recursive: true });
   writeFileSync(join2(directory, "diff.patch"), diff);
   writeFileSync(join2(directory, "functions.patch"), functions);
   writeFileSync(join2(directory, "related.md"), related(functions));
-  writeJson("context.json", { ...run, addedLines: addedLines(diff) });
-  writeJson("pr.json", { title: pull.title, description: pull.body, files, conversation });
+  if (prDiff !== diff)
+    writeFileSync(join2(directory, "pr.patch"), prDiff);
+  if (trigger.instructions)
+    writeFileSync(join2(directory, "request.md"), trigger.instructions);
+  writeJson("context.json", { ...run, mode, since: mode === "incremental" ? since : null, baseRef: trigger.baseRef, previous, addedLines: addedLines(prDiff) });
+  writeJson("pr.json", {
+    title: pull.title,
+    description: pull.body,
+    review: { mode, reason, since: mode === "incremental" ? since : null },
+    files,
+    previousFindings: previous.map(({ thread, url, ...finding }) => finding),
+    conversation
+  });
   const instructions = join2(directory, "instructions.md");
   try {
     writeFileSync(instructions, git(["show", `${run.base}:.github/redline/instructions.md`]));
@@ -5743,5 +5877,6 @@ main(() => {
     rmSync(instructions, { force: true });
     log("No .github/redline/instructions.md on the base branch. Using the default review.");
   }
-  log(`Prepared PR #${run.pr} at ${run.head}: ${files.length} changed files, ${conversation.length} discussion entries.`);
+  output("review", "true");
+  log(`Prepared ${mode} review of PR #${run.pr} at ${run.head}. ${reason} ${files.length} changed files, ${previous.length} open findings, ${conversation.length} discussion entries.`);
 });

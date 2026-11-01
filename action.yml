@@ -21,41 +21,38 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Check event
-      id: check
+    - name: Resolve
+      id: resolve
       shell: bash
       env:
-        ACTION: ${{ github.event.action }}
-        DRAFT: ${{ github.event.pull_request.draft }}
-        # Fork PRs are skipped: their files could prompt-inject the model into leaking the user's API key.
-        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        GH_TOKEN: ${{ github.token }}
+        REDLINE_TRIGGER: ${{ runner.temp }}/redline/trigger.json
+      run: node "$GITHUB_ACTION_PATH/dist/resolve.js"
+
+    - name: Check runner
+      if: steps.resolve.outputs.run == 'true'
+      shell: bash
       run: |
-        if [[ "$ACTION" == closed || "$DRAFT" == true || "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]]; then
-          echo "::notice::Redline skips closed, draft and fork pull requests."
-          echo "run=false" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
         if [[ "$RUNNER_OS" != Linux || "$RUNNER_ARCH" != X64 ]]; then
           echo "::error::Redline runs on Linux x64 runners only, like ubuntu-latest."
           exit 1
         fi
-        echo "run=true" >> "$GITHUB_OUTPUT"
 
     - uses: actions/checkout@v6
-      if: steps.check.outputs.run == 'true'
+      if: steps.resolve.outputs.run == 'true'
       with:
-        ref: ${{ github.event.pull_request.head.sha }}
+        ref: ${{ steps.resolve.outputs.head }}
         fetch-depth: 0
         persist-credentials: false
 
     - uses: oven-sh/setup-bun@v2
-      if: steps.check.outputs.run == 'true'
+      if: steps.resolve.outputs.run == 'true'
       with:
         bun-version-file: ${{ github.action_path }}/package.json
 
     - name: Resolve versions
       id: versions
-      if: steps.check.outputs.run == 'true'
+      if: steps.resolve.outputs.run == 'true'
       shell: bash
       run: |
         echo "opencode=$(jq -r '.devDependencies["@opencode/plugin"]' "$GITHUB_ACTION_PATH/package.json")" >> "$GITHUB_OUTPUT"
@@ -63,7 +60,7 @@ runs:
 
     - uses: actions/cache@v4
       id: cache
-      if: steps.check.outputs.run == 'true'
+      if: steps.resolve.outputs.run == 'true'
       with:
         path: |
           ${{ github.action_path }}/node_modules
@@ -71,7 +68,7 @@ runs:
         key: redline-${{ runner.os }}-${{ runner.arch }}-${{ steps.versions.outputs.lock }}-${{ steps.versions.outputs.opencode }}
 
     - name: Install
-      if: steps.check.outputs.run == 'true' && steps.cache.outputs.cache-hit != 'true'
+      if: steps.resolve.outputs.run == 'true' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         VERSION: ${{ steps.versions.outputs.opencode }}
@@ -84,13 +81,12 @@ runs:
           | tar -xz -C "$RUNNER_TEMP/redline-cli" --strip-components=2 package/bin/opencode
 
     - name: Collect
-      if: steps.check.outputs.run == 'true'
+      id: collect
+      if: steps.resolve.outputs.run == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
-        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        REDLINE_TRIGGER: ${{ runner.temp }}/redline/trigger.json
         MAX_FINDINGS: ${{ inputs.max_findings || '10' }}
         FAIL_ON: ${{ inputs.fail_on || 'high' }}
       run: |
@@ -100,16 +96,19 @@ runs:
         find . -path ./.git -prune -o \( -name AGENTS.md -o -name CLAUDE.md \) -type f -exec rm -f {} +
 
     - name: Review
-      if: steps.check.outputs.run == 'true'
+      if: steps.collect.outputs.review == 'true'
       shell: bash
       env:
         MODEL: ${{ inputs.model }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_NUMBER: ${{ steps.resolve.outputs.pr }}
       run: |
         set -euo pipefail
         args=(--model "${MODEL:-opencode-go/glm-5.3-flash}" --agent review)
         if [[ -f .github/redline/instructions.md ]]; then
           args+=(--file .github/redline/instructions.md)
+        fi
+        if [[ -f .github/redline/request.md ]]; then
+          args+=(--file .github/redline/request.md)
         fi
         env -u GITHUB_TOKEN -u GH_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
           OPENCODE_CONFIG="$GITHUB_ACTION_PATH/opencode.json" \
@@ -118,7 +117,7 @@ runs:
           < /dev/null
 
     - name: Publish
-      if: ${{ !cancelled() && steps.check.outputs.run == 'true' }}
+      if: ${{ !cancelled() && steps.collect.outputs.review == 'true' }}
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

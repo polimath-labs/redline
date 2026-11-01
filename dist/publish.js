@@ -5555,7 +5555,20 @@ var reviewSchema = Struct({
     title: text(100),
     problem: text(500),
     fix: text(350)
+  })),
+  previous: ArraySchema(Struct({
+    id: positiveInt,
+    status: Literals(["open", "fixed"])
   }))
+});
+var triggerSchema = Struct({
+  pr: positiveInt,
+  head: sha,
+  base: sha,
+  baseRef: String4,
+  manual: Boolean3,
+  full: Boolean3,
+  instructions: String4
 });
 var runSchema = Struct({
   repository: String4.check(isPattern2(/^[\w.-]+\/[\w.-]+$/)),
@@ -5565,8 +5578,21 @@ var runSchema = Struct({
   maxFindings: positiveInt,
   failOn: Literals(["high", "medium", "never"])
 });
+var previousSchema = Struct({
+  id: positiveInt,
+  thread: String4,
+  severity: Literals(["high", "medium", "low"]),
+  title: String4,
+  path: String4,
+  line: NullOr(Number5),
+  url: String4
+});
 var contextSchema = Struct({
   ...runSchema.fields,
+  mode: Literals(["full", "incremental", "revisit"]),
+  since: NullOr(sha),
+  baseRef: String4,
+  previous: ArraySchema(previousSchema),
   addedLines: Record(String4, ArraySchema(positiveInt))
 });
 var marker = "<!-- redline -->";
@@ -5581,7 +5607,12 @@ function validateReview(input, context) {
   const report = decodeUnknownSync(reviewSchema, { onExcessProperty: "error" })(input);
   if (report.findings.length > context.maxFindings)
     throw new Error(`At most ${context.maxFindings} findings. Keep the strongest.`);
-  const has = (severity) => report.findings.some((finding) => finding.severity === severity);
+  const unknown = report.previous.find((entry) => !context.previous.some((finding) => finding.id === entry.id));
+  if (unknown)
+    throw new Error(`Unknown previous finding ${unknown.id}. Use the ids in previousFindings.`);
+  const fixed = new Set(report.previous.filter((entry) => entry.status === "fixed").map((entry) => entry.id));
+  const open = [...report.findings, ...context.previous.filter((finding) => !fixed.has(finding.id))];
+  const has = (severity) => open.some((finding) => finding.severity === severity);
   if (report.status === "incomplete" && report.gaps.length === 0)
     throw new Error("An incomplete review must list the changed code it didn't read in gaps.");
   if (has("high") && report.mergeRisk.level !== "high")
@@ -5594,6 +5625,9 @@ function validateReview(input, context) {
     if (!context.addedLines[finding.path]?.includes(finding.line)) {
       throw new Error(`Finding must target an added line: ${finding.path}:${finding.line}`);
     }
+    const earlier = context.previous.find((item) => item.path === finding.path && item.title.toLowerCase() === finding.title.toLowerCase());
+    if (earlier)
+      throw new Error(`Finding ${earlier.id} already reports this. Give its status in previous instead.`);
     const key = `${finding.path}:${finding.line}:${finding.title.toLowerCase()}`;
     if (seen.has(key))
       throw new Error(`Duplicate finding: ${key}`);
@@ -5619,6 +5653,7 @@ var commentSchema = Struct({
   user: userSchema,
   created_at: optional2(String4),
   submitted_at: optional2(NullOr(String4)),
+  commit_id: optional2(NullOr(String4)),
   path: optional2(String4),
   line: optional2(NullOr(Number5))
 });
@@ -5629,6 +5664,11 @@ function log(message) {
   console.log(message);
   if (process.env.GITHUB_STEP_SUMMARY)
     appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${message}
+`);
+}
+function output(name, value) {
+  if (process.env.GITHUB_OUTPUT)
+    appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}
 `);
 }
 function command(program, args, input) {
@@ -5684,7 +5724,19 @@ main(() => {
 
 ${explain(finding)}`
   })).filter((comment) => !posted.has(comment.body));
-  const table = report.findings.length === 0 ? "No findings." : [
+  const fixed = new Set(report.previous.filter((entry) => entry.status === "fixed").map((entry) => entry.id));
+  const earlier = (status) => context.previous.filter((finding) => fixed.has(finding.id) === status);
+  const link = (finding) => `- [${safeText(finding.title)}](${finding.url})`;
+  const stillOpen = earlier(false).length === 0 ? "" : `**Still open from earlier reviews**
+
+${earlier(false).map(link).join(`
+`)}`;
+  const resolved = earlier(true).length === 0 ? "" : `**Fixed since the last review**
+
+${earlier(true).map(link).join(`
+`)}`;
+  const scope = context.mode === "incremental" && context.since ? `changes from [\`${context.since.slice(0, 7)}\`](https://github.com/${context.repository}/commit/${context.since}) to ` : "";
+  const table = report.findings.length === 0 ? context.previous.length > 0 ? "No new findings." : "No findings." : [
     "| Severity | Finding | Location |",
     "|---|---|---|",
     ...report.findings.map((finding) => `| ${label[finding.severity]} | ${cell(finding.title)} | ${location(finding)} |`)
@@ -5704,6 +5756,8 @@ ${list(report.gaps)}
     mention,
     `**${label[report.mergeRisk.level]} merge risk.** ${safeText(report.mergeRisk.reason)}`,
     table,
+    stillOpen,
+    resolved,
     `**What changed**
 
 ${list(report.changes)}`,
@@ -5716,14 +5770,15 @@ ${list(report.checked)}
     incomplete,
     gaps,
     ...extra,
-    `<sub>Review of [\`${context.head.slice(0, 7)}\`](https://github.com/${context.repository}/commit/${context.head}) via [Redline](${readme})</sub>`
+    `<sub>Review of ${scope}[\`${context.head.slice(0, 7)}\`](https://github.com/${context.repository}/commit/${context.head}) via [Redline](${readme})</sub>`,
+    `<!-- redline:base ${encodeURIComponent(context.baseRef)} -->`
   ].filter(Boolean).join(`
 
 `);
   const post = (review) => command("gh", ["api", `${endpoint}/reviews`, "--method", "POST", "--input", "-"], JSON.stringify({ commit_id: context.head, event: "COMMENT", ...review }));
   try {
     post({ body: body(), comments });
-    log(`Posted ${report.mergeRisk.level}-risk review on PR #${context.pr} with ${comments.length} inline comments.`);
+    log(`Posted ${report.mergeRisk.level}-risk ${context.mode} review on PR #${context.pr} with ${comments.length} inline comments.`);
   } catch (error) {
     log(`Inline comments rejected, posting findings in the summary: ${errorMessage(error)}`);
     post({ body: body(...report.findings.map((finding) => `### ${label[finding.severity]} · ${safeText(finding.title)}
@@ -5731,8 +5786,17 @@ ${list(report.checked)}
 ${location(finding)}
 
 ${explain(finding)}`)), comments: [] });
-    log(`Posted ${report.mergeRisk.level}-risk review on PR #${context.pr} with findings in the summary.`);
+    log(`Posted ${report.mergeRisk.level}-risk ${context.mode} review on PR #${context.pr} with findings in the summary.`);
   }
+  for (const finding of earlier(true)) {
+    try {
+      command("gh", ["api", "graphql", "-f", "query=mutation($id: ID!) { resolveReviewThread(input: { threadId: $id }) { thread { id } } }", "-f", `id=${finding.thread}`]);
+    } catch (error) {
+      log(`Couldn't resolve the thread for "${safeText(finding.title)}": ${errorMessage(error)}`);
+    }
+  }
+  if (earlier(true).length > 0)
+    log(`Resolved ${earlier(true).length} fixed findings.`);
   if (rank[report.mergeRisk.level] >= rank[context.failOn]) {
     console.log(`::error::Redline found ${report.mergeRisk.level} merge risk. See the review on PR #${context.pr}.`);
     process.exitCode = 1;
