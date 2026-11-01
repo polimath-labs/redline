@@ -104,9 +104,11 @@ runs:
       run: |
         set -euo pipefail
         args=(--model "${MODEL:-opencode-go/glm-5.3-flash}" --agent review)
-        if [[ -f .github/redline/instructions.md ]]; then
-          args+=(--file .github/redline/instructions.md)
-        fi
+        for file in project instructions; do
+          if [[ -f ".github/redline/$file.md" ]]; then
+            args+=(--file ".github/redline/$file.md")
+          fi
+        done
         if [[ -f .github/redline/request.md ]]; then
           args+=(--file .github/redline/request.md)
         fi
