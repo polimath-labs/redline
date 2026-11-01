@@ -153,8 +153,8 @@ Commands need the `issue_comment` trigger and the job's `if` from the [setup](#s
 - Every push starts a review and cancels the one in progress. Closing the pull request cancels it too. A requested review waits for the running one to finish.
 - A review only counts once it posts. A failed or cancelled run leaves its commits for the next one, and so do commits pushed while a review runs.
 - Once a review posts, reopening the pull request or re-running the job with no new commits doesn't start another one. Use `/redline review` to get one.
-- Each finding keeps its place across reviews. Later reviews mark it still open or fixed, and only new findings get inline comments.
-- Findings that are still open count toward the merge risk, and so do pull request comments.
+- Each finding is an inline comment thread. Later reviews recheck the unresolved ones, and resolve a thread once its finding is fixed. Resolve a thread yourself to dismiss a finding.
+- Unresolved findings count toward the merge risk, and so do pull request comments.
 - Drafts wait until they're marked ready.
 - Pull requests over 200 files or 300,000 characters of diff are too large to review. Split them up.
 - Lockfiles are left out of the diff.
@@ -164,5 +164,5 @@ Commands need the `issue_comment` trigger and the job's `if` from the [setup](#s
 - The agent can read and search files. It can't run commands, edit files or fetch URLs.
 - Reviews post with the workflow's own `GITHUB_TOKEN`, and the agent never sees it. Nothing calls our servers.
 - Redline checks a commenter's access with the GitHub API before it runs. Their instructions reach the agent as a file and never run as a command.
-- Redline keeps its progress in a hidden note in its own review. It only trusts notes posted by `github-actions[bot]`.
+- Redline picks up from the commit its last review covered. It only trusts reviews and threads posted by `github-actions[bot]`.
 - Pull requests from forks are skipped. A stranger's pull request could hide instructions that trick the model into leaking your key.

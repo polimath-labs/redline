@@ -1,16 +1,80 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Schema } from "effect";
-import { latestState, plan, stripState } from "./checkpoint";
-import { addedLines } from "./diff";
-import { api, commentSchema, directory, git, log, main, output, pages, pullSchema } from "./github";
+import { api, command, commentSchema, directory, log, main, output, pages, pullSchema } from "./github";
 import { marker, readJson, runSchema, triggerSchema } from "./schema";
-import type { Context } from "./schema";
 
 const lockfiles = [":(exclude)bun.lock", ":(exclude)package-lock.json", ":(exclude)yarn.lock", ":(exclude)pnpm-lock.yaml"];
 
+function git(args: string[]) {
+  return command("git", ["-c", "core.quotePath=false", ...args]);
+}
+
+// Redline's own inline comments, unresolved, are the findings still open from earlier reviews.
+const threadSchema = Schema.Struct({
+  id: Schema.String,
+  isResolved: Schema.Boolean,
+  path: Schema.String,
+  line: Schema.NullOr(Schema.Number),
+  comments: Schema.Struct({
+    nodes: Schema.Array(Schema.Struct({ databaseId: Schema.Number, url: Schema.String, body: Schema.String, author: Schema.NullOr(Schema.Struct({ login: Schema.String })) })),
+  }),
+});
+const threadsQuery = `query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $repo) { pullRequest(number: $pr) { reviewThreads(first: 100, after: $endCursor) {
+    pageInfo { hasNextPage endCursor }
+    nodes { id isResolved path line comments(first: 1) { nodes { databaseId url body author { login } } } }
+  } } }
+}`;
+const heading = /^\*\*(High|Medium|Low) · (.+)\*\*$/m;
+
+function previousFindings(repository: string, pr: number) {
+  const [owner, repo] = repository.split("/");
+  const lines = command("gh", ["api", "graphql", "--paginate", "--jq", ".data.repository.pullRequest.reviewThreads.nodes[]",
+    "-f", `query=${threadsQuery}`, "-f", `owner=${owner}`, "-f", `repo=${repo}`, "-F", `pr=${pr}`]);
+  return lines.split("\n").filter(Boolean).flatMap((line) => {
+    const thread = Schema.decodeUnknownSync(threadSchema)(JSON.parse(line));
+    const first = thread.comments.nodes[0];
+    const bot = first?.author?.login === "github-actions" || first?.author?.login === "github-actions[bot]";
+    const match = !thread.isResolved && bot && first?.body.startsWith(marker) ? heading.exec(first.body) : null;
+    if (!first || !match?.[1] || !match[2]) return [];
+    const severity = match[1].toLowerCase() as "high" | "medium" | "low";
+    return [{ id: first.databaseId, thread: thread.id, severity, title: match[2], path: thread.path, line: thread.line, url: first.url }];
+  });
+}
+
+function isAncestor(ancestor: string, head: string) {
+  try {
+    git(["merge-base", "--is-ancestor", ancestor, head]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function writeJson(name: string, value: unknown) {
   writeFileSync(join(directory, name), JSON.stringify(value, null, 2));
+}
+
+function addedLines(diff: string) {
+  const added: Record<string, number[]> = {};
+  let lines: number[] = [];
+  let line = 0;
+  let header = false;
+  for (const entry of diff.split("\n")) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(entry);
+    if (entry.startsWith("diff --git ")) header = true;
+    else if (header && entry.startsWith("+++ ")) {
+      lines = [];
+      if (entry.startsWith("+++ b/")) added[entry.slice(6).replace(/\t$/, "")] = lines;
+    } else if (hunk) {
+      header = false;
+      line = Number(hunk[1]);
+    } else if (header) continue;
+    else if (entry.startsWith("+")) lines.push(line++);
+    else if (entry.startsWith(" ")) line++;
+  }
+  return added;
 }
 
 function related(functions: string) {
@@ -41,74 +105,69 @@ main(() => {
   const endpoint = `repos/${run.repository}/pulls/${run.pr}`;
   const pull = api([endpoint], pullSchema);
   const reviews = pages(`${endpoint}/reviews?per_page=100`, commentSchema);
-  const state = latestState(reviews);
-  const selected = plan({ ...trigger, state }, {
-    mergeBase: (a, b) => git(["merge-base", a, b]).trim(),
-    isAncestor: (a, b) => {
-      try {
-        git(["merge-base", "--is-ancestor", a, b]);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-  });
-  if (selected.mode === "skip") {
-    log(`${selected.reason} Comment \`/redline review\` to review it again.`);
-    output("review", "false");
-    return;
-  }
-
   const relevant = (item: typeof commentSchema.Type) => Boolean(item.body) && (item.user?.type === "User" || Boolean(item.body?.startsWith(marker)));
   const entry = (kind: string) => (item: typeof commentSchema.Type) =>
-    ({ kind, author: item.user?.login, at: item.created_at ?? item.submitted_at, path: item.path, line: item.line, body: stripState(item.body ?? "") });
+    ({ kind, author: item.user?.login, at: item.created_at ?? item.submitted_at, path: item.path, line: item.line, body: item.body });
   const conversation = [
     ...pages(`repos/${run.repository}/issues/${run.pr}/comments?per_page=100`, commentSchema).filter(relevant).map(entry("comment")),
     ...reviews.filter(relevant).map(entry("review")),
     ...pages(`${endpoint}/comments?per_page=100`, commentSchema).filter(relevant).map(entry("inline")),
   ].toSorted((a, b) => (a.at ?? "").localeCompare(b.at ?? ""));
 
-  const from = selected.since ?? selected.mergeBase;
-  const changedFiles = (start: string) => git(["diff", "--name-only", "-z", "--find-renames", start, run.head]).split("\0").filter(Boolean);
+  // The checkpoint is the commit Redline's last posted review covered. Only the workflow's own reviews count.
+  const last = reviews.findLast((review) => review.user?.login === "github-actions[bot]" && review.body?.startsWith(marker) && review.commit_id);
+  const since = last?.commit_id ?? undefined;
+  const lastBase = /<!-- redline:base (\S+) -->/.exec(last?.body ?? "")?.[1];
+  const mergeBase = git(["merge-base", run.base, run.head]).trim();
+  const plan = (): { mode: "full" | "incremental" | "revisit" | "skip"; reason: string } => {
+    if (trigger.full) return { mode: "full", reason: "Full review requested." };
+    if (!since) return { mode: "full", reason: "First review of this pull request." };
+    if (lastBase !== encodeURIComponent(trigger.baseRef)) return { mode: "full", reason: "The base branch changed since the last review." };
+    if (since === run.head) {
+      return trigger.manual
+        ? { mode: "revisit", reason: "Requested again with no new commits." }
+        : { mode: "skip", reason: `No new commits since the review of ${since.slice(0, 7)}.` };
+    }
+    if (!isAncestor(since, run.head)) return { mode: "full", reason: `The last reviewed commit ${since.slice(0, 7)} is no longer in this branch.` };
+    if (git(["merge-base", run.base, since]).trim() !== mergeBase) return { mode: "full", reason: "The branch merged in new commits from the base branch." };
+    return { mode: "incremental", reason: `Changes since ${since.slice(0, 7)}.` };
+  };
+  const { mode, reason } = plan();
+  if (mode === "skip") {
+    log(`${reason} Comment \`/redline review\` to review it again.`);
+    output("review", "false");
+    return;
+  }
+
+  const from = mode === "incremental" && since ? since : mergeBase;
+  const files = git(["diff", "--name-only", "-z", "--find-renames", from, run.head]).split("\0").filter(Boolean);
   const diffWith = (start: string, ...flags: string[]) =>
     git(["diff", "--no-ext-diff", "--no-textconv", "--find-renames", ...flags, start, run.head, "--", ".", ...lockfiles]);
-  const files = changedFiles(from);
   const diff = diffWith(from);
   if (files.length > 200 || diff.length > 300_000) {
     throw new Error("PR too large to review: split PRs over 200 files or 300,000 diff characters.");
   }
   const functions = diffWith(from, "--function-context");
-  // Findings can anchor anywhere the PR adds lines, so a still-relevant line from an earlier commit stays reachable.
-  const prDiff = selected.mode === "incremental" ? diffWith(selected.mergeBase) : diff;
+  // New findings can anchor anywhere the PR adds lines, not only in the new commits.
+  const prDiff = from === mergeBase ? diff : diffWith(mergeBase);
+  const previous = previousFindings(run.repository, run.pr);
 
   rmSync(directory, { recursive: true, force: true });
   mkdirSync(directory, { recursive: true });
   writeFileSync(join(directory, "diff.patch"), diff);
   writeFileSync(join(directory, "functions.patch"), functions);
   writeFileSync(join(directory, "related.md"), related(functions));
-  if (selected.mode === "incremental") writeFileSync(join(directory, "pr.patch"), prDiff);
-  const context: Context = {
-    ...run,
-    mode: selected.mode,
-    reason: selected.reason,
-    since: selected.since,
-    baseRef: trigger.baseRef,
-    mergeBase: selected.mergeBase,
-    nextId: state?.nextId ?? 1,
-    previous: state?.findings ?? [],
-    addedLines: addedLines(prDiff),
-  };
-  writeJson("context.json", context);
+  if (prDiff !== diff) writeFileSync(join(directory, "pr.patch"), prDiff);
+  if (trigger.instructions) writeFileSync(join(directory, "request.md"), trigger.instructions);
+  writeJson("context.json", { ...run, mode, since: mode === "incremental" ? since : null, baseRef: trigger.baseRef, previous, addedLines: addedLines(prDiff) });
   writeJson("pr.json", {
     title: pull.title,
     description: pull.body,
-    review: { mode: selected.mode, reason: selected.reason, since: selected.since, requested: trigger.manual },
+    review: { mode, reason, since: mode === "incremental" ? since : null },
     files,
-    ...(selected.mode === "incremental" ? { prFiles: changedFiles(selected.mergeBase) } : {}),
-    previousFindings: context.previous,
+    previousFindings: previous.map(({ thread, url, ...finding }) => finding),
     conversation,
   });
-  if (trigger.instructions) writeFileSync(join(directory, "request.md"), trigger.instructions);
   const instructions = join(directory, "instructions.md");
   try {
     writeFileSync(instructions, git(["show", `${run.base}:.github/redline/instructions.md`]));
@@ -117,5 +176,5 @@ main(() => {
     log("No .github/redline/instructions.md on the base branch. Using the default review.");
   }
   output("review", "true");
-  log(`Prepared ${selected.mode} review of PR #${run.pr} at ${run.head}: ${selected.reason} ${files.length} changed files, ${context.previous.length} earlier findings, ${conversation.length} discussion entries.`);
+  log(`Prepared ${mode} review of PR #${run.pr} at ${run.head}. ${reason} ${files.length} changed files, ${previous.length} open findings, ${conversation.length} discussion entries.`);
 });
