@@ -5554,7 +5554,7 @@ var reviewSchema = Struct({
     line: positiveInt,
     title: text(100),
     problem: text(500),
-    fix: text(350)
+    fix: text(450)
   }))
 });
 var runSchema = Struct({

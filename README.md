@@ -59,7 +59,7 @@ Put the rules you want enforced in `.github/redline/instructions.md`:
 - We don't log request bodies.
 ```
 
-Redline reads this file from the base branch, so a pull request can't rewrite the rules it's reviewed against. For the same reason it ignores `AGENTS.md` and `CLAUDE.md` in the pull request. Put any rules you want enforced into `instructions.md`.
+Redline reads this file from the base branch, so a pull request can't rewrite the rules it's reviewed against. For the same reason it doesn't load `AGENTS.md`, `CLAUDE.md` or `opencode.json` from the pull request as instructions. It moves them to `.github/redline/withheld/` as `.txt` files, so the agent can still review them as code. Put any rules you want enforced into `instructions.md`.
 
 ### Models and keys
 
@@ -130,6 +130,6 @@ A high risk fails the run after the review posts, so the pull request shows a fa
 
 ## Callouts 
 
-- The agent can read and search files. It can't run commands, edit files or fetch URLs.
+- The agent can read and search files. It can't run commands, edit files or fetch URLs. A PR comment from anyone can reach the model, and the model's API key is in the job's environment, so a shell tool would let an injected comment exfiltrate it. When a finding depends on runtime behavior, the review gives you the command to confirm it.
 - Reviews post with the workflow's own `GITHUB_TOKEN`, and the agent never sees it. Nothing calls our servers.
 - Pull requests from forks are skipped. A stranger's pull request could hide instructions that trick the model into leaking your key.

@@ -96,8 +96,22 @@ runs:
       run: |
         echo "$RUNNER_TEMP/redline-cli" >> "$GITHUB_PATH"
         node "$GITHUB_ACTION_PATH/dist/collect.js"
-        rm -rf opencode.json opencode.jsonc .opencode
-        find . -path ./.git -prune -o \( -name AGENTS.md -o -name CLAUDE.md \) -type f -exec rm -f {} +
+        # opencode loads these as instructions or config, so a PR could use them to steer its own review.
+        # Move regular files under a .txt name the agent can still read as evidence. Delete symlinks.
+        withheld=.github/redline/withheld
+        find . -path ./.git -prune -o -path "./$withheld" -prune -o \
+          \( -name AGENTS.md -o -name CLAUDE.md -o -path ./opencode.json -o -path ./opencode.jsonc \) \
+          \( -type f -o -type l \) -print0 |
+          while IFS= read -r -d '' file; do
+            file=${file#./}
+            if [[ -f "$file" && ! -L "$file" ]]; then
+              mkdir -p "$withheld/$(dirname "$file")"
+              mv "$file" "$withheld/$file.txt"
+            else
+              rm -f "$file"
+            fi
+          done
+        rm -rf .opencode
 
     - name: Review
       if: steps.check.outputs.run == 'true'
