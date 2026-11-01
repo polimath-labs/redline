@@ -43,6 +43,13 @@ function previousFindings(repository: string, pr: number) {
   });
 }
 
+// A regular file from the base branch, so a pull request can't change the rules it's reviewed against.
+// Symlinks are skipped: git show would return the link's target path, not the file.
+function fromBase(base: string, path: string) {
+  const entry = git(["ls-tree", base, "--", path]).trim();
+  return /^100\d{3} blob /.test(entry) ? git(["show", `${base}:${path}`]) : undefined;
+}
+
 function isAncestor(ancestor: string, head: string) {
   try {
     git(["merge-base", "--is-ancestor", ancestor, head]);
@@ -168,12 +175,15 @@ main(() => {
     previousFindings: previous.map(({ thread, url, ...finding }) => finding),
     conversation,
   });
-  const instructions = join(directory, "instructions.md");
-  try {
-    writeFileSync(instructions, git(["show", `${run.base}:.github/redline/instructions.md`]));
-  } catch {
-    rmSync(instructions, { force: true });
-    log("No .github/redline/instructions.md on the base branch. Using the default review.");
+  const instructions = fromBase(run.base, ".github/redline/instructions.md");
+  if (instructions) writeFileSync(join(directory, "instructions.md"), instructions);
+  else log("No .github/redline/instructions.md on the base branch. Using the default review.");
+  // The project's agent guide, so the review knows how the project works. Named project.md because
+  // the action deletes every AGENTS.md and CLAUDE.md from the pull request's checkout.
+  const guide = ["AGENTS.md", "CLAUDE.md"].map((name) => ({ name, text: fromBase(run.base, name) })).find((file) => file.text);
+  if (guide?.text) {
+    writeFileSync(join(directory, "project.md"), guide.text);
+    log(`Using ${guide.name} from the base branch as project context.`);
   }
   output("review", "true");
   log(`Prepared ${mode} review of PR #${run.pr} at ${run.head}. ${reason} ${files.length} changed files, ${previous.length} open findings, ${conversation.length} discussion entries.`);

@@ -67,7 +67,9 @@ Put the rules you want enforced in `.github/redline/instructions.md`:
 - We don't log request bodies.
 ```
 
-Redline reads this file from the base branch, so a pull request can't rewrite the rules it's reviewed against. For the same reason it ignores `AGENTS.md` and `CLAUDE.md` in the pull request. Put any rules you want enforced into `instructions.md`.
+Redline reads this file from the base branch, so a pull request can't rewrite the rules it's reviewed against.
+
+If your repository has an `AGENTS.md` at its root, or a `CLAUDE.md` if there's no `AGENTS.md`, Redline also reads it from the base branch. The agent uses it to learn how your project works. Copies in the pull request are deleted before the review starts, so a pull request can't steer its own review.
 
 ### Models and keys
 

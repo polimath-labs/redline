@@ -5741,6 +5741,10 @@ function previousFindings(repository, pr) {
     return [{ id: first.databaseId, thread: thread.id, severity, title: match[2], path: thread.path, line: thread.line, url: first.url }];
   });
 }
+function fromBase(base, path) {
+  const entry = git(["ls-tree", base, "--", path]).trim();
+  return /^100\d{3} blob /.test(entry) ? git(["show", `${base}:${path}`]) : undefined;
+}
 function isAncestor(ancestor, head) {
   try {
     git(["merge-base", "--is-ancestor", ancestor, head]);
@@ -5870,12 +5874,15 @@ main(() => {
     previousFindings: previous.map(({ thread, url, ...finding }) => finding),
     conversation
   });
-  const instructions = join2(directory, "instructions.md");
-  try {
-    writeFileSync(instructions, git(["show", `${run.base}:.github/redline/instructions.md`]));
-  } catch {
-    rmSync(instructions, { force: true });
+  const instructions = fromBase(run.base, ".github/redline/instructions.md");
+  if (instructions)
+    writeFileSync(join2(directory, "instructions.md"), instructions);
+  else
     log("No .github/redline/instructions.md on the base branch. Using the default review.");
+  const guide = ["AGENTS.md", "CLAUDE.md"].map((name) => ({ name, text: fromBase(run.base, name) })).find((file) => file.text);
+  if (guide?.text) {
+    writeFileSync(join2(directory, "project.md"), guide.text);
+    log(`Using ${guide.name} from the base branch as project context.`);
   }
   output("review", "true");
   log(`Prepared ${mode} review of PR #${run.pr} at ${run.head}. ${reason} ${files.length} changed files, ${previous.length} open findings, ${conversation.length} discussion entries.`);
