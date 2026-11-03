@@ -5,7 +5,7 @@
   <img src="brand/redline-wordmark-light.svg" alt="Redline" height="72">
 </picture>
 
-<p>Pull request reviews by an opencode agent, in your own CI.</p>
+<p>AI code review that runs in your CI, with your model and your key.</p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![By Polimath Labs](https://img.shields.io/badge/by-Polimath%20Labs-D90036.svg)](https://polimath.dev/)
 
