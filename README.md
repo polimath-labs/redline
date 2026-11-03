@@ -1,6 +1,17 @@
-# Redline Review
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/redline-wordmark-dark.svg">
+  <img src="brand/redline-wordmark-light.svg" alt="Redline" height="72">
+</picture>
+
+<p>AI code review that runs in your CI, with your model and your key.</p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![By Polimath Labs](https://img.shields.io/badge/by-Polimath%20Labs-D90036.svg)](https://polimath.dev/)
+
+</div>
+
+---
 
 Redline runs an [opencode](https://opencode.ai) agent in **your** CI runners to review your pull requests. We don't collect any data, however your code goes to the model provider you pick and nowhere else.
 
